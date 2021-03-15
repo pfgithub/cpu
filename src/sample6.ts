@@ -95,6 +95,44 @@ function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum
 const added = adder(64, builtin.in("left", 64), builtin.in("right", 64), builtin.const(0));
 builtin.out("total", [...added.sum, added.carry]);
 
+// ok goal :: make an 8 bit cpu I guess
+// instructions fit in 8 bits because why not
+
+// wait 8 bits = max. 255 memory that's kinda small and requires paging
+// why not 64 bits? (why not : because it takes 779 gates to make a single 64 bit adder)
+
+// ok goal :: make a 64 bit cpu I guess
+// or 386 gates for a 32 bit adder
+// idk
+
+// also I really want to have permission levels that would be so neat
+// permission levels:
+// - 0: unmapped memory
+// - 1: mapped memory, no io access
+// but mapped memory seems kinda difficult to implement idk
+// mostly I want mapped memory because I want to make an os that has syscalls
+// and is safe to run any program in
+
+// ok so
+// 16 registers (xxxx):
+// - ta, tb, tc, td, te, sa, sb, sc, sd, se, ua, ub, uc, ud, ue, uf
+// 1-bit flag
+// registers hold 64-bit values
+
+// instructions:
+// load (register : mem address).* → (register : output)
+// store (register : mem address).* = (register : value)
+// add (register : o) = (register : l) + (register : r) :: sets flag 1 on overflow, 0 on ok
+// mov (register : o) = (immediate32)
+
+// should this be like
+//   test a = b (→ flag)
+// + jmp «somewhere»
+// - jmp «somewhere»
+// or
+//   jeq a = b «somewhere»
+// idk
+
 function assertNever(a: never): never {
     console.log("Not never:", a);
     throw new Error("Not never");
