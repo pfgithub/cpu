@@ -47,42 +47,45 @@ const builtin = {
     },
 };
 
-function nor(a: Pin, b: Pin): Pin {
-    return builtin.nor(a, b);
+function nor(a: Pin, b: Pin, ...rest: Pin[]): Pin {
+    return rest.reduce((t, c) => builtin.nor(t, c), builtin.nor(a, b));
 }
 function not(a: Pin): Pin {
     return builtin.not(a);
 }
-function and(a: Pin, b: Pin): Pin {
-    return nor(not(a), not(b));
-}
-function or(a: Pin, b: Pin): Pin {
-    return not(nor(a, b));
-}
-function xor(a: Pin, b: Pin): Pin {
-    return or(
-        and(a, not(b)),
-        and(b, not(a)),
+function and(a: Pin, b: Pin, ...rest: Pin[]): Pin {
+    return rest.reduce((t, c) => and(t, c),
+        nor(not(a), not(b))
     );
 }
-function adder(a: Pin, b: Pin, carry: Pin): {sum: Pin, carry: Pin} {
+function or(a: Pin, b: Pin, ...rest: Pin[]): Pin {
+    return rest.reduce((t, c) => or(t, c),
+        not(nor(a, b))
+    );
+}
+function xor(a: Pin, b: Pin, ...rest: Pin[]): Pin {
+    return rest.reduce((t, c) => xor(t, c), or(
+        and(a, not(b)),
+        and(b, not(a)),
+    ));
+}
+function adder1(a: Pin, b: Pin, carry: Pin): {sum: Pin, carry: Pin} {
     const neither = xor(a, b);
     return {
         sum: xor(neither, carry),
         carry: or(and(neither, carry), and(a, b))
     };
 }
-function adder2(a: Pins<2>, b: Pins<2>, carry: Pin): {sum: Pins<2>, carry: Pin} {
-    const a0 = adder(a[0], b[0], carry);
-    const a1 = adder(a[1], b[1], a0.carry);
-    return {sum: [a0.sum, a1.sum], carry: a1.carry};
+function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum: Pins<W>, carry: Pin} {
+    const respins: Pin[] = [];
+    for(let i = 0; i < w; i++) {
+        const added = adder1(a[i]!, b[i]!, carry);
+        carry = added.carry;
+        respins.push(added.sum);
+    }
+    return {sum: respins as Pins<W>, carry};
 }
-function adder4(a: Pins<4>, b: Pins<4>, carry: Pin): {sum: Pins<4>, carry: Pin} {
-    const a0 = adder2([a[0], a[1]], [b[0], b[1]], carry);
-    const a1 = adder2([a[2], a[3]], [b[2], b[3]], a0.carry);
-    return {sum: [...a0.sum, ...a1.sum], carry: a1.carry};
-}
-const added = adder4(builtin.in("left", 4), builtin.in("right", 4), builtin.const(0));
+const added = adder(4, builtin.in("left", 4), builtin.in("right", 4), builtin.const(0));
 builtin.out("total", [...added.sum, added.carry]);
 
 function assertNever(a: never): never {
