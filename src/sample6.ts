@@ -182,6 +182,8 @@ const incrementer = builtin.state(64);
 const incremented = adder(64, incrementer.map(q => q.value) as Pins<64>, new Array(64).fill(0).map(q => builtin.const(0)) as Pins<64>, builtin.const(1));
 incremented.sum.forEach((v, i) => incrementer[i]!.setValue(v));
 
+builtin.out("counter", incremented.sum);
+
 function assertNever(a: never): never {
     console.log("Not never:", a);
     throw new Error("Not never");
@@ -226,34 +228,42 @@ function simulate(raw_pins: PinData[]) {
             return {kind: "state", id: sid};
         }else assertNever(pin);
     });
-    const pin_cache: boolean[] = [];
+    function executeOneCycle(): {[key: string]: number[]} {
+        const pin_cache: boolean[] = [];
 
-    function getValueNoCache(pv: SimulationPin): boolean {
-        if(pv.kind === "const") return pv.value;
-        if(pv.kind === "nor") return !(getValue(pv.deps[0]) || getValue(pv.deps[1]));
-        if(pv.kind === "not") return !getValue(pv.dep);
-        if(pv.kind === "pin") return getValue(pv.dep);
-        if(pv.kind === "state") return state_values[pv.id]!.value;
-        assertNever(pv);
+        function getValueNoCache(pv: SimulationPin): boolean {
+            if(pv.kind === "const") return pv.value;
+            if(pv.kind === "nor") return !(getValue(pv.deps[0]) || getValue(pv.deps[1]));
+            if(pv.kind === "not") return !getValue(pv.dep);
+            if(pv.kind === "pin") return getValue(pv.dep);
+            if(pv.kind === "state") return state_values[pv.id]!.value;
+            assertNever(pv);
+        }
+        function getValue(pin: Pin): boolean {
+            const cached = pin_cache[pin as unknown as number];
+            if(cached != null) return cached;
+            const pv = sim_pins[(pin as unknown as number) - 1]!;
+            const res = getValueNoCache(pv);
+            pin_cache[pin as unknown as number] = res;
+            return res;
+        }
+        const outputs_map: {[key: string]: number[]} = {};
+        for(const output of outputs) {
+            if(!Object.hasOwnProperty.call(outputs_map, output.name)) outputs_map[output.name] = [];
+            outputs_map[output.name]!.push(+getValue(output.pin));
+        }
+        state_values = state_values.map(sv => {
+            return {value: getValue(sv.dep), dep: sv.dep};
+        });
+
+        return outputs_map;
     }
-    function getValue(pin: Pin): boolean {
-        const cached = pin_cache[pin as unknown as number];
-        if(cached != null) return cached;
-        const pv = sim_pins[(pin as unknown as number) - 1]!;
-        const res = getValueNoCache(pv);
-        pin_cache[pin as unknown as number] = res;
-        return res;
-    }
-    const outputs_map: {[key: string]: number[]} = {};
-    for(const output of outputs) {
-        if(!Object.hasOwnProperty.call(outputs_map, output.name)) outputs_map[output.name] = [];
-        outputs_map[output.name]!.push(+getValue(output.pin));
-    }
-    console.log(state_values.map(p => +p.value));
-    state_values = state_values.map(sv => {
-        return {value: getValue(sv.dep), dep: sv.dep};
-    })
-    console.log(outputs_map, state_values.map(p => +p.value));
+    console.log(executeOneCycle());
+    console.log(executeOneCycle());
+    console.log(executeOneCycle());
+    console.log(executeOneCycle());
+    console.log(executeOneCycle());
+    console.log(executeOneCycle());
 }
 builtin.pins.forEach((pin, i) => {
     if(pin.kind === "in") {
