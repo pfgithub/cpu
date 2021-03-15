@@ -20,6 +20,9 @@ type StateItem = {value: Pin, setValue: (dep: Pin) => void};
 const builtin = {
     pins: [] as PinData[],
     pin_cache: new Map<string, Pin>(),
+    getPin(pin: Pin): PinData {
+        return builtin.pins[(pin as unknown as number) - 1]!;
+    },
     addPin(data: PinData): Pin {
         const stringified = JSON.stringify(data);
         const cached = builtin.pin_cache.get(stringified);
@@ -38,10 +41,16 @@ const builtin = {
         return res as unknown as Tuple<Pin, Length>;
     },
     nor(a: Pin, b: Pin): Pin {
+        const pa = builtin.getPin(a);
+        const pb = builtin.getPin(b);
+        if(pa.kind === "const" && pa.value === 1) return builtin.addPin({kind: "const", value: 0});
+        if(pb.kind === "const" && pb.value === 1) return builtin.addPin({kind: "const", value: 0});
+        if(pa.kind === "const" && pb.kind === "const") return builtin.addPin({kind: "const", value: 1});
         return builtin.addPin({kind: "nor", deps: [a, b]});
     },
     not(a: Pin): Pin {
-        // if(pins[a - 1].kind === "const") return {kind: "const"}
+        const pv = builtin.getPin(a);
+        if(pv.kind === "const") return builtin.addPin({kind: "const", value: pv.value === 1 ? 0 : 1});
         return builtin.addPin({kind: "not", dep: a});
     },
     out<Pins extends Pin[]>(name: string, pins: Pins): Pins {
