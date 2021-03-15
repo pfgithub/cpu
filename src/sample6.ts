@@ -1,4 +1,9 @@
-type Tuple<T, N extends number> = N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
+type Tuple<T, N extends number> = N extends 64
+    ? [
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+    ]
+    : N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
 type _TupleOf<T, N extends number, R extends unknown[]> = R['length'] extends N ? R : _TupleOf<T, N, [T, ...R]>;
 
 type Pins<L extends number> = Tuple<Pin, L>;
@@ -70,10 +75,12 @@ function xor(a: Pin, b: Pin, ...rest: Pin[]): Pin {
     ));
 }
 function adder1(a: Pin, b: Pin, carry: Pin): {sum: Pin, carry: Pin} {
-    const neither = xor(a, b);
+    const mid = nor(a, b);
+    const sect = nor(nor(a, mid), nor(mid, b));
+    const midsect = nor(sect, carry);
     return {
-        sum: xor(neither, carry),
-        carry: or(and(neither, carry), and(a, b))
+        sum: nor(a, sect),
+        carry: nor(nor(sect, midsect), nor(midsect, carry)),
     };
 }
 function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum: Pins<W>, carry: Pin} {
@@ -85,7 +92,7 @@ function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum
     }
     return {sum: respins as Pins<W>, carry};
 }
-const added = adder(4, builtin.in("left", 4), builtin.in("right", 4), builtin.const(0));
+const added = adder(64, builtin.in("left", 64), builtin.in("right", 64), builtin.const(0));
 builtin.out("total", [...added.sum, added.carry]);
 
 function assertNever(a: never): never {
