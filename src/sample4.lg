@@ -1,0 +1,29 @@
+(@store timer setTimer)
+(@link setTimer (@not timer))
+
+(@in andA)
+(@in andB)
+(@out andOut)
+(@link andOut (@nor (@not a) (@not b)))
+
+(@in orA)
+(@in orB)
+(@out orOut)
+(@link orOut (@not (@nor orA orB)))
+
+(@macro and (%a %b) (@nor (@not %a) (@not %b)))
+(@macro or (%a %b) (@not (@nor %a %b)))
+(@macro xor (%a %b) (or (and a (not b)) (and b (not a))))
+
+(@macro adder (%a %b %carry) (
+    (@pin neither (xor addA addB))
+))
+
+(@in addA)
+(@in addB)
+(@in addCarry)
+(@out addSum)
+(@out addCarry)
+
+(@pin 1 (xor addA addB))
+(@link addSum (xor 1 addCarry))

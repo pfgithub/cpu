@@ -1,0 +1,66 @@
+// logic only goes top to bottom
+// a = (or b)
+// b = (or a)
+// not allowed
+
+// each tick, everything evaluates and the new values for storage are saved
+
+storage timer {default off};
+timer = (nor timer)
+
+// variables are constant and can only be set once
+
+// nor is the only provided gate
+
+// basic adder
+
+match (and a) : (out) {
+    (write out = a)
+} (and a b) : (out) {
+    (write out = nor (nor a) (nor b))
+} communicative;
+
+match (or a) : (out) {
+    (write out = a)
+} (or a b) : (out) {
+    (write out = nor (nor a b))
+} communicative;
+
+match (not a) : (out) {
+    (write out = nor a)
+}
+
+match (xor a b) : (out) {
+    (write out = or
+        (and a (not b))
+        (and b (not a))
+    )
+}
+
+// would be nice to be able to define infix ops
+// (a .and !b) .or (b .and !a)
+// but probably won't
+
+match (adder a b carry) : (sum carryout) {
+    (const 1 = xor a b)
+    (write sum = xor 1 carry)
+    (write carryout = or (and 1 carry) (and a b))
+}
+
+storage numone×8 {switch}
+storage numtwo×8 {switch}
+
+storage out×9 {outonly}
+
+out[0] 1 = (adder numone[0] numtwo[0] false)
+
+
+// (and 1 2 3 4 5 6 7 8) is the same as (and (and (and 1 2) (and 3 4)) (and (and 5 6) (and 7 8)))
+//                                      (and (and (and (and (and (and (and 1 2) 3) 4) 5) 6) 7) 8)
+// oh I was worried "oh no it matters that it can be collapsed more"
+// but it doesn't atm
+// I guess it matters for simd/parallelization
+
+def and (a, b) (out) : .communicative {
+    out = (nor (nor a) (nor b))
+}

@@ -1,0 +1,67 @@
+function nor(a, b) {
+    return @nor(a, b);
+}
+(@macro nor ((1 a) (1 b)) (
+    (@return (@nor a, b))
+))
+function not(a) {
+    return @not(a);
+}
+(@macro not ((1 a)) (
+    (@return (@not a))
+))
+function and(a, b) {
+    return nor(not(a), not(b));
+}
+(@macro and ((1 a) (1 b)) (
+    (@return (nor (not a) (not b)))
+))
+function or(a, b) {
+    return not(nor(a, b));
+}
+(@macro or ((1 a) (1 b)) (
+    (@return (not (nor a b)))
+))
+function xor(a, b) {
+    return or(and(a, not(b)), and(b, not(a)));
+    // (a <and> not(b)) <or> (b <and> not(a))
+}
+(@macro xor ((1 a) (1 b)) (
+    (@return (or (and a (not b)) (and b (not a))))
+))
+
+function adder(a, b, carry) {
+    const neither = xor(a, b);
+    return {
+        sum: xor(neither, carry),
+        carry: or(and(neither, carry), and(a, b)),
+    };
+}
+(@macro adder ((1 a) (1 b) (1 carry)) (
+    (@const neither (xor a b))
+    (@return (@dict
+        (sum (xor neither carry))
+        (carry (or (and neither carry) (and a b)))
+    ))
+))
+function adder2(a×2, b×2, carry) {
+    const a0 = adder(a[0], b[0], carry)
+    const a1 = adder(a[1], b[1], a0.carry)
+    return {
+        sum: [a0.sum, a1.sum],
+        carry: a1.carry,
+    }
+}
+function adder4(a×4, b×4, carry) {
+    const a0 = adder(a[0..2], b[0..2], carry);
+    const a1 = adder(a[2..4], b[2..4], a0.carry);
+    return {
+        sum: […a0.sum, …a1.sum],
+        carry: a1.carry,
+    };
+}
+
+const added = adder4(in{left×4}, in{right×4}, 0);
+out total×5 = […added.sum, added.carry]
+
+
