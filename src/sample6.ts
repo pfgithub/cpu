@@ -90,9 +90,9 @@ function or(a: Pin, b: Pin, ...rest: Pin[]): Pin {
     );
 }
 function xor(a: Pin, b: Pin, ...rest: Pin[]): Pin {
-    return rest.reduce((t, c) => xor(t, c), or(
-        and(a, not(b)),
-        and(b, not(a)),
+    return rest.reduce((t, c) => xor(t, c), nor(
+        and(a, b),
+        nor(a, b),
     ));
 }
 function halfAdder(l: Pin, r: Pin): {sum: Pin, carry: Pin} {
