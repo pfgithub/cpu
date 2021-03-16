@@ -33,6 +33,10 @@ const OutputType = enum {
     counter,
 };
 
+const Inputs = struct {
+    values: []usize,
+};
+
 const LogicExecutor = struct {
     const ExecutionPin = union(enum) {
         nor: struct { deps: [2]PinIndex },
@@ -138,6 +142,8 @@ const LogicExecutor = struct {
             // input: struct { input_type: InputType, input_index: usize },
             // output: struct { output_id: usize },
             .nor => |nor| for (nor.deps) |dep| {
+                // potential optimization here : rather than going left to right, go from lowest depth to highest depth.
+                // check caches first in case a cache is available
                 if (le.resolve(dep) == 1) break @as(u1, 0);
             } else 1,
             .constant => |constant| constant.value,
