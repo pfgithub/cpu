@@ -1,0 +1,78 @@
+# page table
+
+so memory addresses are eg `0xFFFFFFFF`
+
+before entering into user code, the os must set up a page table
+
+set_syscall_handler <…>
+set_user_instr_count <…> <…> # number of instructions to execute before jumping to … :: to prevent user code from doing while(true) and never returning to the OS
+set_page_table <reg : location of page table in memory>
+exec_user <reg : start of user code in memory, userspace pointer>
+
+page table looks like this:
+0..0xFF → 0 (unavailable) | addr of page table level 2
+   0..0xFF → 0 (unavailable) | addr of start position in memory for this 0..0xFFFF-wide page
+
+Given an address in user memory:
+- memory[page_table + address[top 2 bytes]]
+- memory[^ + address[2...4th byte]]
+- ^ + last 4 bytes = address in system memory
+
+sample page table:
+
+page_table+[0..255]:
+- 0, 0, 0, 0, 0, 0, 0, 0, (→ next_bit), 0, 0, …
+
+next_bit+[0..255]:
+- 0, 0, 0, →final_bit, …
+
+final_bit+[0..0xFFFF]:
+- 0, 0, 0…
+- user program edits this memory
+
+normal cpus seem to use a u12-wide page rather than a u16-wide page, but this cpu also has []u64 memory instead of []u8 memory so who cares what
+normal cpus do
+
+# syscalls and interrupts and stuff
+
+user programs can
+- execute an invalid instruction
+- access invalid memory
+- run out of cycles
+- explicitly syscall
+
+when any of these happens, the cpu must
+- save the execution state
+- save the return address
+- switch to os permission level
+- jump to the specified exception handler
+
+sample:
+
+```
+… init page table
+set_page_table …
+
+set_instr_limit (li 200) # user code can execute 60 instructions.
+
+user_code:
+exec_user (li user_code_start_in_page_table)
+# when the user code has interrupted, execution continues here.
+# the interrupt_reason and interrupt_continue registers are set to their corrosponding values
+
+if interrupt_reason == 1: // instruction limit exceeded
+    // continue
+    exec_user (interrupt_continue)
+```
+
+user code:
+
+```
+syscall (li .print) (li 'h')
+syscall (li .print) (li 'i')
+syscall (li .print) (li '!')
+
+read t3 # error! invalid instruction
+load (li 0) # error! invalid memory address
+```
+

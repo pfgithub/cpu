@@ -12,7 +12,6 @@ type PinData =
     | {kind: "in", name: string}
     | {kind: "out", name: string, dep: Pin}
     | {kind: "state", dep: Pin | undefined, initial: 0 | 1}
-    | {kind: "not", dep: Pin}
     | {kind: "nor", deps: [Pin, Pin]}
     | {kind: "const", value: 0 | 1}
 ;
@@ -48,15 +47,10 @@ const builtin = {
         if(pa.kind === "const" && pb.kind === "const") return builtin.addPin({kind: "const", value: 1});
         return builtin.addPin({kind: "nor", deps: [a, b]});
     },
-    not(a: Pin): Pin {
-        const pv = builtin.getPin(a);
-        if(pv.kind === "const") return builtin.addPin({kind: "const", value: pv.value === 1 ? 0 : 1});
-        return builtin.addPin({kind: "not", dep: a});
-    },
-    out<Pins extends Pin[]>(name: string, pins: Pins): Pins {
-        return pins.map(pin =>
+    out(name: string, pins: Pin[]) {
+        pins.forEach(pin =>
             builtin.addPin({kind: "out", dep: pin, name})
-        ) as unknown as Pins; // this is okay because Pin can't be extended
+        );
     },
     const(value: 0 | 1): Pin {
         return builtin.addPin({kind: "const", value});
@@ -77,7 +71,7 @@ function nor(a: Pin, b: Pin, ...rest: Pin[]): Pin {
     return rest.reduce((t, c) => builtin.nor(t, c), builtin.nor(a, b));
 }
 function not(a: Pin): Pin {
-    return builtin.not(a);
+    return builtin.nor(a, a);
 }
 function and(a: Pin, b: Pin, ...rest: Pin[]): Pin {
     return rest.reduce((t, c) => and(t, c),
@@ -215,96 +209,32 @@ function assertNever(a: never): never {
     console.log("Not never:", a);
     throw new Error("Not never");
 }
-function simulate(raw_pins: PinData[]) {
-    type SimulationPin =
-        | {kind: "const", value: boolean}
-        | {kind: "state", id: number}
-        | {kind: "pin", dep: Pin}
-        | {kind: "not", dep: Pin}
-        | {kind: "nor", deps: Pins<2>}
-    ;
-    const inputs: {[key: string]: (0 | 1)[]} = {
-        left: "1011001".padStart(64, "0").split("").reverse().map(v => v === "1" ? 1 : 0),
-        right: "1011011".padStart(64, "0").split("").reverse().map(v => v === "1" ? 1 : 0),
 
-        add1l: [1],
-        add1r: [1],
-        add1c: [0],
-    };
-    const outputs: {pin: Pin, name: string}[] = [];
-    let state_values: {value: boolean, dep: Pin}[] = [];
-    const sim_pins: SimulationPin[] = raw_pins.map((pin, index): SimulationPin => {
-        const pin_id = (index + 1) as unknown as Pin;
-        if(pin.kind === "const") {
-            return {kind: "const", value: pin.value === 1};
-        }else if(pin.kind === "nor") {
-            return {kind: "nor", deps: pin.deps};
-        }else if(pin.kind === "not") {
-            return {kind: "not", dep: pin.dep};
-        }else if(pin.kind === "in") {
-            const inv = inputs[pin.name] ?? [];
-            const ina = inv.shift();
-            if(ina == null) throw new Error("missing inv: "+pin.name);
-            return {kind: "const", value: ina === 1};
-        }else if(pin.kind === "out") {
-            outputs.push({pin: pin_id, name: pin.name});
-            return {kind: "pin", dep: pin.dep};
-        }else if(pin.kind === "state") {
-            if(!pin.dep) throw new Error("State missing dep!");
-            const sid = state_values.push({value: pin.initial === 1, dep: pin.dep}) - 1;
-            return {kind: "state", id: sid};
-        }else assertNever(pin);
-    });
-    function executeOneCycle(): {[key: string]: number[]} {
-        const pin_cache: boolean[] = [];
+console.log(
+`pub const Pin = union(enum) {
+    in: struct { name: []const u8 },
+    out: struct { name: []const u8, dep: usize },
 
-        function getValueNoCache(pv: SimulationPin): boolean {
-            if(pv.kind === "const") return pv.value;
-            if(pv.kind === "nor") return !(getValue(pv.deps[0]) || getValue(pv.deps[1]));
-            if(pv.kind === "not") return !getValue(pv.dep);
-            if(pv.kind === "pin") return getValue(pv.dep);
-            if(pv.kind === "state") return state_values[pv.id]!.value;
-            assertNever(pv);
-        }
-        function getValue(pin: Pin): boolean {
-            const cached = pin_cache[pin as unknown as number];
-            if(cached != null) return cached;
-            const pv = sim_pins[(pin as unknown as number) - 1]!;
-            const res = getValueNoCache(pv);
-            pin_cache[pin as unknown as number] = res;
-            return res;
-        }
-        const outputs_map: {[key: string]: number[]} = {};
-        for(const output of outputs) {
-            if(!Object.hasOwnProperty.call(outputs_map, output.name)) outputs_map[output.name] = [];
-            outputs_map[output.name]!.push(+getValue(output.pin));
-        }
-        state_values = state_values.map(sv => {
-            return {value: getValue(sv.dep), dep: sv.dep};
-        });
+    nor: struct { deps: [2]usize },
+    constant: struct { value: u1 },
+    state: struct { dep: usize, initial: u1 },
+};
 
-        return outputs_map;
-    }
-    console.log(executeOneCycle());
-    console.log(executeOneCycle());
-    console.log(executeOneCycle());
-    console.log(executeOneCycle());
-    console.log(executeOneCycle());
-    console.log(executeOneCycle());
-}
+pub const pins = &[_]Pin{`
+);
 builtin.pins.forEach((pin, i) => {
     if(pin.kind === "in") {
-        console.log("%"+(i + 1)+" = in "+pin.name);
+        console.log("    .{ .in = .{ .name = "+JSON.stringify(pin.name)+" } },");
     }else if(pin.kind === "out") {
-        console.log("%"+(i + 1)+" = out %"+pin.dep+" : "+pin.name);
+        console.log("    .{ .out = .{ .name = "+JSON.stringify(pin.name)+", .dep = "+((pin.dep as unknown as number) - 1)+" } },");
     }else if(pin.kind === "const") {
-        console.log("%"+(i + 1)+" = pin.value");
+        console.log("    .{ .constant = .{ .value = "+pin.value+" } },");
     }else if(pin.kind === "nor") {
-        console.log("%"+(i + 1)+" = nor "+pin.deps.map(dep => "%"+dep).join(" "));
-    }else if(pin.kind === "not") {
-        console.log("%"+(i + 1)+" = not %"+pin.dep);
+        console.log("    .{ .nor = .{ .deps = [_]usize{ "+pin.deps.map(dep => (dep as unknown as number) - 1).join(", ")+" } } },");
     }else if(pin.kind === "state") {
-        console.log("%"+(i + 1)+" = @state(%"+(pin.dep ?? "ERR")+", "+pin.initial+")");
+        console.log("    .{ .state = .{ .dep = "+((pin.dep as unknown as number) - 1)+", .initial = "+pin.initial+" } },");
     }else assertNever(pin);
 });
-simulate(builtin.pins);
+console.log("};");
+
+// simulate(builtin.pins);
