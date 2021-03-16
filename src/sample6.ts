@@ -176,6 +176,12 @@ builtin.out("added1", [...added1.sum, added1.carry]);
 // through io pins : it would take a few cycles to handle one instruction. this also means handling partial states.
 // straight in logic : it would take one cycle to handle one instruction
 
+// ok ram is going through i/o pins
+// 64 bits at a time because why not
+// also load/store instrs accept 64 bits
+// want 8 bits? do it yourself lol
+// also is this big endian or little endian? neither, memory is an []u64
+
 // const program_counter = ;
 const toggler = builtin.state(1);
 toggler[0].setValue(not(toggler[0].value));
@@ -186,6 +192,22 @@ const incrementer = builtin.state(64);
 // be made.
 const incremented = adder(64, incrementer.map(q => q.value) as Pins<64>, new Array(64).fill(0).map(q => builtin.const(0)) as Pins<64>, builtin.const(1));
 incremented.sum.forEach((v, i) => incrementer[i]!.setValue(v));
+
+// instruction handling
+// 1: fetch instruction at address
+// 2: parse instruction, fetch needed memory
+
+// ram:
+// reading ram: set out_addr to the addres you want to read. next cycle, ram_in will contain the read value and ram_in_set will be 1.
+// writing ram: set out_addr to the address you want to read, ram_out_set to 1, and ram_out_value to the value you want to set. next cycle, ram_in will
+//    contain the set value and ram_in_set will be 1.
+// note that no ram exists at the address 0. when ram_out_addr is set to 0, nothing will be fetched. ram_out_addr = 0 with ram_out_set = 1 is an error.
+
+// const ram_in = builtin.in("ram_in", 64);
+// const ram_in_set = builtin.in("ram_in_set", 1);
+// const ram_out_addr = builtin.out("ram_out_addr", new Array(64).fill(0).map(q => builtin.const(0)));
+// const ram_out_set = builtin.out("ram_out_set", new Array(64).fill(0).map(q => builtin.const(0)));
+// const ram_out_value = builtin.out("ram_out_set_value", new Array(64).fill(0).map(q => builtin.const(0)));
 
 builtin.out("counter", incremented.sum);
 
