@@ -101,12 +101,17 @@ function halfAdder(l: Pin, r: Pin): {sum: Pin, carry: Pin} {
         carry: and(l, r),
     };
 }
+/// like a normal half adder but the outputs are inversed
+function notHalfAdder(l: Pin, r: Pin): {notSum: Pin, notCarry: Pin} {
+    const notCarry = nor(l, r);
+    return {notCarry, notSum: nor(nor(l, notCarry), nor(notCarry, r))};
+}
 function adder1(a: Pin, b: Pin, carry: Pin): {sum: Pin, carry: Pin} {
-    const h1 = halfAdder(a, b); // 1 + 1 = s0 c1
-    const h2 = halfAdder(h1.sum, carry); // 0 + 0 = s0 c0
+    const h1 = notHalfAdder(a, b);
+    const h2 = notHalfAdder(h1.notSum, carry);
     return {
-        sum: h2.sum,
-        carry: not(nor(h1.carry, h2.carry)),
+        sum: h2.notSum,
+        carry: nor(h1.notCarry, h2.notCarry),
     };
 }
 function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum: Pins<W>, carry: Pin} {
