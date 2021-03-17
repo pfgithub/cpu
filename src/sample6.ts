@@ -62,12 +62,12 @@ const builtin = {
     },
     constw<Length extends number>(w: Length, initial: string): Pins<Length> {
         return new Array(w).fill(0).map((_, i) => {
-            return builtin.const(initial.charAt(i) === "1" ? 1 : 0);
+            return builtin.const(initial.charAt(initial.length - i - 1) === "1" ? 1 : 0);
         }) as Pins<Length>;
     },
     state<Length extends number>(width: Length, initial: string = ""): {set: (value: Pins<Length>) => void, value: Pins<Length>} {
         const res: StateItem[] = new Array(width).fill(0).map((_, i): StateItem => {
-            const pin_data: PinData = {kind: "state", dep: undefined, initial: initial.charAt(i) === "1" ? 1 : 0, debug: new Error().stack ?? ""};
+            const pin_data: PinData = {kind: "state", dep: undefined, initial: initial.charAt(initial.length - i - 1) === "1" ? 1 : 0, debug: new Error().stack ?? ""};
             return {value: builtin.addPin(pin_data), setValue: (dep) => {
                 if(pin_data.dep) throw new Error("dep already set");
                 pin_data.dep = dep;
@@ -239,7 +239,7 @@ type Output = {
 
 // ifEq(pins, builtin.constw(3, "001"))
 // 1 on true, 0 on false. for use with ifTrue()
-function ifEq<W extends number>(pins: Pins<W>, expected: Pins<W>): Pin {
+function ifEq<PinsW extends Pin[]>(pins: PinsW, expected: PinsW): Pin {
     // (010) = (010)
     // (a.0 xor b.0) nor (a.1 xor b.1) nor (a.2 xor b.2)
     return nor(...pins.map((pin, i) => {
@@ -258,6 +258,33 @@ function ifTrue<PinsW extends Pin[]>(condition: Pin, ontrue: PinsW): PinsMap<Pin
     }) as PinsMap<PinsW>;
 }
 
+type IfChain<T> = {
+    when(condition: Pin, value: T): IfChain<T>,
+    else(value: T): T,
+};
+function ifChain<T>(branch: (cond: Pin, value: T) => T, merge: (a: T, b: T) => T): IfChain<T> {
+    const conditions: Pin[] = []; // else is nor(...conditions)
+    let cv: undefined | {t: T};
+    const res: IfChain<T> = {
+        when(condition, value) {
+            const cond = nor(...conditions, not(condition));
+            conditions.push(condition);
+            const branched = branch(cond, value);
+            if(cv) {
+                cv = {t: merge(cv.t, branched)};
+            }else{
+                cv = {t: branched};
+            }
+            return res;
+        },
+        else(value) {
+            if(!cv) throw new Error("when required for else");
+            return merge(cv.t, branch(nor(...conditions), value));
+        },
+    };
+    return res;
+}
+
 // instruction decoding steps:
 // 0b000 - start. fetch the instruction at the ram address «instr_addr», set decoding step to 0b001
 // 0b001 - decode. choose what to do based on
@@ -272,18 +299,55 @@ function performInstructionFetch(): Output {
         ram_out_set_value: builtin.constw(64, "0"),
     };
 }
+function performInstructionFetchArgs(): Output {
+    return {
+        instruction_ptr: instruction_ptr.value,
+        instruction_handling_stage: builtin.constw(3, "010"),
+
+        ram_out_addr: builtin.constw(61, "0"),
+        ram_out_set: builtin.constw(1, "0"),
+        ram_out_set_value: builtin.constw(64, "0010"),
+    };
+}
+function orMany<PinsA extends Pin[]>(a: PinsA, b: PinsA): PinsMap<PinsA> {
+    return a.map((av, i) => {
+        const bv = b[i]!;
+        return or(av, bv);
+    }) as PinsMap<PinsA>;
+}
+function getError(): Output {
+    return {
+        instruction_ptr: builtin.constw(61, "0"),
+        instruction_handling_stage: instruction_handling_stage.value,
+        ram_out_addr: builtin.constw(61, "0"),
+        ram_out_set: builtin.constw(1, "0"),
+        ram_out_set_value: builtin.constw(64, "1".repeat(64)),
+    };
+}
 function performInstructionDecode(): Output {
     // ifChain().ifEq().elseIfEq().else()
-    const cond1 = ifEq(instruction_handling_stage.value, builtin.constw(3, "000"));
     const fetch_res = performInstructionFetch();
-    return {
-        instruction_ptr: ifTrue(cond1, fetch_res.instruction_ptr),
-        instruction_handling_stage: ifTrue(cond1, fetch_res.instruction_handling_stage),
 
-        ram_out_addr: ifTrue(cond1, fetch_res.ram_out_addr),
-        ram_out_set: ifTrue(cond1, fetch_res.ram_out_set),
-        ram_out_set_value: ifTrue(cond1, fetch_res.ram_out_set_value),
-    };
+    return ifChain<Output>(
+        (cond, value) => ({
+            instruction_ptr: ifTrue(cond, value.instruction_ptr),
+            instruction_handling_stage: ifTrue(cond, value.instruction_handling_stage),
+            ram_out_addr: ifTrue(cond, value.ram_out_addr),
+            ram_out_set: ifTrue(cond, value.ram_out_set),
+            ram_out_set_value: ifTrue(cond, value.ram_out_set_value),
+        }),
+        (a, b) => ({
+            instruction_ptr: orMany(a.instruction_ptr, b.instruction_ptr),
+            instruction_handling_stage: orMany(a.instruction_handling_stage, b.instruction_handling_stage),
+            ram_out_addr: orMany(a.ram_out_addr, b.ram_out_addr),
+            ram_out_set: orMany(a.ram_out_set, b.ram_out_set),
+            ram_out_set_value: orMany(a.ram_out_set_value, b.ram_out_set_value),
+        }),
+    )
+        .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "000")), performInstructionFetch())
+        .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), performInstructionFetchArgs())
+        .else(getError())
+    ;
 }
 
 {
