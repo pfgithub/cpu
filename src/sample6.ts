@@ -117,11 +117,6 @@ function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum
     }
     return {sum: respins as Pins<W>, carry};
 }
-const added = adder(64, builtin.in("left", 64), builtin.in("right", 64), builtin.const(0));
-builtin.out("total", [...added.sum, added.carry]);
-
-const added1 = adder(1, builtin.in("add1l", 1), builtin.in("add1r", 1), builtin.in("add1c", 1)[0]);
-builtin.out("added1", [...added1.sum, added1.carry]);
 
 // ok goal :: make an 8 bit cpu I guess
 // instructions fit in 8 bits because why not
@@ -197,13 +192,16 @@ incremented.sum.forEach((v, i) => incrementer[i]!.setValue(v));
 //    contain the set value and ram_in_set will be 1.
 // note that no ram exists at the address 0. when ram_out_addr is set to 0, nothing will be fetched. ram_out_addr = 0 with ram_out_set = 1 is an error.
 
-// const ram_in = builtin.in("ram_in", 64);
-// const ram_in_set = builtin.in("ram_in_set", 1);
-// const ram_out_addr = builtin.out("ram_out_addr", new Array(64).fill(0).map(q => builtin.const(0)));
-// const ram_out_set = builtin.out("ram_out_set", new Array(64).fill(0).map(q => builtin.const(0)));
-// const ram_out_value = builtin.out("ram_out_set_value", new Array(64).fill(0).map(q => builtin.const(0)));
+const ram_in = builtin.in("ram_in", 64);
+const ram_in_available = builtin.in("ram_in_available", 1);
+const ram_out_addr = builtin.out("ram_out_addr", new Array(64).fill(0).map(q => builtin.const(0)));
+const ram_out_set = builtin.out("ram_out_set", new Array(64).fill(0).map(q => builtin.const(0)));
+const ram_out_value = builtin.out("ram_out_set_value", new Array(64).fill(0).map(q => builtin.const(0)));
 
-builtin.out("counter", incremented.sum);
+// ram:
+// addr >> 3 = 64b_chunk_addr
+
+// builtin.out("counter", incremented.sum);
 
 function assertNever(a: never): never {
     console.log("Not never:", a);

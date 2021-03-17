@@ -20,25 +20,24 @@ fn IndexedSlice(comptime T: type, comptime Index: type) type {
     };
 }
 
+// what if instead this was struct{v: u64, u: u64} and an enum was generated from it?
+// or alternatively, what if this was handled on the js side
 const InputType = enum {
-    left,
-    right,
-    add1l,
-    add1r,
-    add1c,
+    ram_in,
+    ram_in_available,
 };
 const OutputType = enum {
-    total,
-    added1,
-    counter,
+    ram_out_addr,
+    ram_out_set,
+    ram_out_set_value,
 };
 
-fn EnumStruct(comptime Enum: type, comptime Value: type) type {
+fn EnumStruct(comptime Enum: type, comptime Value: type, comptime default_value: anytype) type {
     var field_list = [_]std.builtin.TypeInfo.StructField{undefined} ** @typeInfo(Enum).Enum.fields.len;
     // a comptime map would be useful here
     const enum_fields: []const std.builtin.TypeInfo.EnumField = @typeInfo(Enum).Enum.fields;
     for (enum_fields) |field, i| {
-        field_list[i] = .{ .name = field.name, .field_type = Value, .default_value = null, .is_comptime = false, .alignment = 0 };
+        field_list[i] = .{ .name = field.name, .field_type = Value, .default_value = default_value, .is_comptime = false, .alignment = 0 };
     }
     return @Type(.{
         .Struct = .{
@@ -56,7 +55,7 @@ const IOShiftSize = u7;
 const InputArray = struct {
     values: [@typeInfo(InputType).Enum.fields.len]IOSize,
     // generate a struct type with @Type() {left: IOSize, right: IOSize, add1l: IOSize, add1r: IOSize, …}
-    const InitializationStruct = EnumStruct(InputType, IOSize);
+    const InitializationStruct = EnumStruct(InputType, IOSize, null);
     pub fn init(istruct: InitializationStruct) InputArray {
         return InputArray{
             .values = blk: {
@@ -73,6 +72,7 @@ const InputArray = struct {
         return @intCast(u1, (iarr.values[@enumToInt(field)] >> index) & 0b1);
     }
 };
+const OutputStruct = EnumStruct(OutputType, IOSize, @as(IOSize, 0));
 const OutputArray = struct {
     values: [@typeInfo(OutputType).Enum.fields.len]IOSize = [_]IOSize{0} ** @typeInfo(OutputType).Enum.fields.len,
     pub fn set(oarr: *OutputArray, field: OutputType, index: u7, value: u1) void {
@@ -80,6 +80,13 @@ const OutputArray = struct {
     }
     pub fn get(oarr: OutputArray, field: OutputType) IOSize {
         return oarr.values[@enumToInt(field)];
+    }
+    pub fn pack(oarr: OutputArray) OutputStruct {
+        var os: OutputStruct = .{};
+        inline for (@typeInfo(OutputType).Enum.fields) |_, i| {
+            @field(os, @tagName(@intToEnum(OutputType, i))) = oarr.get(@intToEnum(OutputType, i));
+        }
+        return os;
     }
 };
 
@@ -153,7 +160,10 @@ const LogicExecutor = struct {
                     break :blk .{ .state = .{ .state_id = index } };
                 },
                 .in => |in| blk: {
-                    const input_type = std.meta.stringToEnum(InputType, in.name) orelse @panic("bad input type");
+                    const input_type = std.meta.stringToEnum(InputType, in.name) orelse {
+                        std.log.emerg("Input named {s} not supported.", .{in.name});
+                        return error.BadInputType;
+                    };
                     const v = try input_kind_seen_count.getOrPut(input_type);
                     if (!v.found_existing) v.entry.value = 0 else {
                         if (v.entry.value == std.math.maxInt(u7)) {
@@ -165,11 +175,14 @@ const LogicExecutor = struct {
                     break :blk .{ .input = .{ .input_type = input_type, .input_index = v.entry.value } };
                 },
                 .out => |out| blk: {
-                    const output_type = std.meta.stringToEnum(OutputType, out.name) orelse @panic("bad output type");
+                    const output_type = std.meta.stringToEnum(OutputType, out.name) orelse {
+                        std.log.emerg("Output named {s} not supported.", .{out.name});
+                        return error.BadInputType;
+                    };
                     const v = try output_kind_seen_count.getOrPut(output_type);
                     if (!v.found_existing) v.entry.value = 0 else {
                         if (v.entry.value == std.math.maxInt(u7)) {
-                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(u7), output_type });
+                            std.log.emerg("More than {} outputs named {}", .{ std.math.maxInt(u7), output_type });
                             @panic("crash");
                         }
                         v.entry.value += 1;
@@ -201,6 +214,11 @@ const LogicExecutor = struct {
     }
 
     fn resolve(le: *LogicExecutor, pin_index: PinIndex, inputs: InputArray) u1 {
+        // how to do this without recursion:
+        // array of dependencies to resolve (or one of those linked list things with array sections or something)
+        // every time a pin is found that hasn't been resolved yet, add it and the current pin to the resolution list
+        // is this faster? probably not but who knows
+        // is this not recursive? yes
         if (le.logic_cache.get(pin_index) & 0b10 == 0) return @intCast(u1, le.logic_cache.get(pin_index));
         const pin = le.pins.get(pin_index);
         const res: u1 = switch (pin) {
@@ -223,7 +241,7 @@ const LogicExecutor = struct {
         return res;
     }
 
-    pub fn cycle(le: *LogicExecutor, inputs: InputArray) OutputArray {
+    pub fn cycle(le: *LogicExecutor, inputs: InputArray) OutputStruct {
         // 1: clear cache
         for (le.logic_cache.slice) |*item| item.* = 0b10;
         // 2: resolve next states
@@ -244,9 +262,26 @@ const LogicExecutor = struct {
         for (le.outputs) |output| {
             outv.set(output.output_type, output.output_index, output.value);
         }
-        return outv;
+        return outv.pack();
     }
 };
+
+pub fn updateInputs(outputs: OutputStruct, ram: []u64) InputArray {
+    const ram_v: struct { value: u64, on: u1 } = blk: {
+        if (outputs.ram_out_addr != 1) {
+            const out_addr = @intCast(usize, outputs.ram_out_addr); // crash: value is outside of ram / usize range
+            if (outputs.ram_out_set == 1) {
+                ram[out_addr] = @intCast(u64, outputs.ram_out_set_value); // crash: ram_out_set_value is > 64 bytes
+            }
+            break :blk .{ .value = ram[out_addr], .on = 1 };
+        }
+        break :blk .{ .value = undefined, .on = 0 };
+    };
+    return InputArray.init(.{
+        .ram_in = ram_v.value,
+        .ram_in_available = ram_v.on,
+    });
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -256,21 +291,22 @@ pub fn main() !void {
     var executor = try LogicExecutor.init(alloc, logic.pins);
     defer executor.deinit();
 
-    const inputs = InputArray.init(.{
-        .left = 108,
-        .right = 212,
-        .add1l = 0b1,
-        .add1r = 0b1,
-        .add1c = 0b1,
-    });
+    var ram = try alloc.alloc(u64, 1000000); // 1mb
+    defer alloc.free(ram);
+    for (ram) |*it| it.* = 0;
+    ram[0] = undefined; // ram[0] is invalid and doesn't exist
+    ram[1] = 0;
 
-    const timer = try std.time.Timer.start();
+    var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 
-    const res = executor.cycle(inputs);
+    // const timer = try std.time.Timer.start();
+    // const end = timer.read();
+    // std.log.info("Took: {}", .{end});
 
-    const end = timer.read();
-    for (res.values) |value, i| {
-        std.log.info("{}: {}", .{ @intToEnum(OutputType, @intCast(std.meta.TagType(OutputType), i)), value });
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        const res = executor.cycle(inputs);
+        std.log.info("{any}", .{res});
+        inputs = updateInputs(res, ram);
     }
-    std.log.info("Took: {}", .{end});
 }
