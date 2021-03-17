@@ -3,6 +3,11 @@ type Tuple<T, N extends number> = N extends 64
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
     ]
+    : N extends 61
+    ? [
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+    ]
     : N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
 type _TupleOf<T, N extends number, R extends unknown[]> = R['length'] extends N ? R : _TupleOf<T, N, [T, ...R]>;
 
@@ -11,7 +16,7 @@ type Pin = {__opaque_is_pin: true};
 type PinData =
     | {kind: "in", name: string}
     | {kind: "out", name: string, dep: Pin}
-    | {kind: "state", dep: Pin | undefined, initial: 0 | 1}
+    | {kind: "state", dep: Pin | undefined, initial: 0 | 1, debug: string}
     | {kind: "nor", deps: [Pin, Pin]}
     | {kind: "const", value: 0 | 1}
 ;
@@ -55,21 +60,45 @@ const builtin = {
     const(value: 0 | 1): Pin {
         return builtin.addPin({kind: "const", value});
     },
-    state<Length extends number>(width: Length): Tuple<StateItem, Length> {
-        const res: StateItem[] = new Array(width).fill(0).map((): StateItem => {
-            const pin_data: PinData = {kind: "state", dep: undefined, initial: 0};
+    constw<Length extends number>(w: Length, initial: string): Pins<Length> {
+        return new Array(w).fill(0).map((_, i) => {
+            return builtin.const(initial.charAt(i) === "1" ? 1 : 0);
+        }) as Pins<Length>;
+    },
+    state<Length extends number>(width: Length, initial: string = ""): {set: (value: Pins<Length>) => void, value: Pins<Length>} {
+        const res: StateItem[] = new Array(width).fill(0).map((_, i): StateItem => {
+            const pin_data: PinData = {kind: "state", dep: undefined, initial: initial.charAt(i) === "1" ? 1 : 0, debug: new Error().stack ?? ""};
             return {value: builtin.addPin(pin_data), setValue: (dep) => {
                 if(pin_data.dep) throw new Error("dep already set");
                 pin_data.dep = dep;
             }};
         });
-        return res as Tuple<StateItem, Length>;
+        return {
+            value: res.map(r => r.value) as Pins<Length>,
+            set: (value) => {
+                res.forEach((item, i) => item.setValue(value[i]!));
+            },
+        };
     }
 };
 
-function nor(a: Pin, b: Pin, ...rest: Pin[]): Pin {
-    return rest.reduce((t, c) => builtin.nor(t, c), builtin.nor(a, b));
+function nor(...all: Pin[]): Pin {
+    if(all.length >= 2) {
+        const [a, b, ...rest] = all as [Pin, Pin, ...Pin[]];
+        return rest.reduce((t, c) => builtin.nor(not(t), c), builtin.nor(a, b));
+    }else if(all.length === 1) {
+        return not(all[0]!);
+    }else{
+        throw new Error("cannot nor 0 values");
+    }
 }
+// TODO tests like
+// test {
+//    nor(...builtin.constw(3, "010")) === 0
+//    nor(...builtin.constw(3, "000")) === 1
+//    nor(...builtin.constw(3, "001")) === 0
+//    …
+// }
 function not(a: Pin): Pin {
     return builtin.nor(a, a);
 }
@@ -173,14 +202,14 @@ function adder<W extends number>(w: W, a: Pins<W>, b: Pins<W>, carry: Pin): {sum
 
 // const program_counter = ;
 const toggler = builtin.state(1);
-toggler[0].setValue(not(toggler[0].value));
+toggler.set([not(toggler.value[0])]);
 
 const incrementer = builtin.state(64);
 // this uses more gates than needed because (64b)+(u1) is way easier than (64b)+(64b)+(u1)
 // some automatic optimizaitons could be done (resolving gates with constant inputs) or alternatively an adder([w1] [w2] [w3]) : [max(w1, w2, w3)] could
 // be made.
-const incremented = adder(64, incrementer.map(q => q.value) as Pins<64>, new Array(64).fill(0).map(q => builtin.const(0)) as Pins<64>, builtin.const(1));
-incremented.sum.forEach((v, i) => incrementer[i]!.setValue(v));
+const incremented = adder(64, incrementer.value as Pins<64>, new Array(64).fill(0).map(q => builtin.const(0)) as Pins<64>, builtin.const(1));
+incrementer.set(incremented.sum);
 
 // instruction handling
 // 1: fetch instruction at address
@@ -194,9 +223,79 @@ incremented.sum.forEach((v, i) => incrementer[i]!.setValue(v));
 
 const ram_in = builtin.in("ram_in", 64);
 const ram_in_available = builtin.in("ram_in_available", 1);
-const ram_out_addr = builtin.out("ram_out_addr", new Array(64).fill(0).map(q => builtin.const(0)));
-const ram_out_set = builtin.out("ram_out_set", new Array(1).fill(0).map(q => builtin.const(0)));
-const ram_out_value = builtin.out("ram_out_set_value", new Array(64).fill(0).map(q => builtin.const(0)));
+
+
+const instruction_ptr = builtin.state(61, "01");
+const instruction_handling_stage = builtin.state(3, "000");
+
+type Output = {
+    instruction_ptr: Pins<61>,
+    instruction_handling_stage: Pins<3>,
+
+    ram_out_addr: Pins<61>,
+    ram_out_set: Pins<1>,
+    ram_out_set_value: Pins<64>,
+};
+
+// ifEq(pins, builtin.constw(3, "001"))
+// 1 on true, 0 on false. for use with ifTrue()
+function ifEq<W extends number>(pins: Pins<W>, expected: Pins<W>): Pin {
+    // (010) = (010)
+    // (a.0 xor b.0) nor (a.1 xor b.1) nor (a.2 xor b.2)
+    return nor(...pins.map((pin, i) => {
+        const expcdt = expected[i]!;
+        return xor(expcdt, pin);
+    }));
+}
+
+type PinsMap<PinsW extends Pin[]> = {[key in keyof PinsW]: Pin};
+
+// if the condition is true, returns ontrue
+// else returns all zeroes (for use with or)
+function ifTrue<PinsW extends Pin[]>(condition: Pin, ontrue: PinsW): PinsMap<PinsW> {
+    return ontrue.map(ot => {
+        return and(condition, ot);
+    }) as PinsMap<PinsW>;
+}
+
+// instruction decoding steps:
+// 0b000 - start. fetch the instruction at the ram address «instr_addr», set decoding step to 0b001
+// 0b001 - decode. choose what to do based on
+// 0b111 - error, everything is wrong. don't do anything and display an error LED.
+function performInstructionFetch(): Output {
+    return {
+        instruction_ptr: instruction_ptr.value,
+        instruction_handling_stage: builtin.constw(3, "001"),
+
+        ram_out_addr: instruction_ptr.value,
+        ram_out_set: builtin.constw(1, "0"),
+        ram_out_set_value: builtin.constw(64, "0"),
+    };
+}
+function performInstructionDecode(): Output {
+    // ifChain().ifEq().elseIfEq().else()
+    const cond1 = ifEq(instruction_handling_stage.value, builtin.constw(3, "000"));
+    const fetch_res = performInstructionFetch();
+    return {
+        instruction_ptr: ifTrue(cond1, fetch_res.instruction_ptr),
+        instruction_handling_stage: ifTrue(cond1, fetch_res.instruction_handling_stage),
+
+        ram_out_addr: ifTrue(cond1, fetch_res.ram_out_addr),
+        ram_out_set: ifTrue(cond1, fetch_res.ram_out_set),
+        ram_out_set_value: ifTrue(cond1, fetch_res.ram_out_set_value),
+    };
+}
+
+{
+    const res = performInstructionDecode();
+
+    instruction_ptr.set(res.instruction_ptr);
+    instruction_handling_stage.set(res.instruction_handling_stage);
+
+    const ram_out_addr = builtin.out("ram_out_addr", res.ram_out_addr);
+    const ram_out_set = builtin.out("ram_out_set", res.ram_out_set);
+    const ram_out_value = builtin.out("ram_out_set_value", res.ram_out_set_value);
+}
 
 // ram:
 // addr >> 3 = 64b_chunk_addr
@@ -230,6 +329,11 @@ builtin.pins.forEach((pin, i) => {
     }else if(pin.kind === "nor") {
         console.log("    .{ .nor = .{ .deps = [_]usize{ "+pin.deps.map(dep => (dep as unknown as number) - 1).join(", ")+" } } },");
     }else if(pin.kind === "state") {
+        if(!pin.dep) {
+            console.log("};");
+            console.warn(pin.debug);
+            throw new Error("Missing .set for state");
+        }
         console.log("    .{ .state = .{ .dep = "+((pin.dep as unknown as number) - 1)+", .initial = "+pin.initial+" } },");
     }else assertNever(pin);
 });

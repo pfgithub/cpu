@@ -43,7 +43,7 @@ fn EnumFromStruct(comptime Struct: type) type {
 }
 const InputType = EnumFromStruct(InputStruct);
 const OutputStruct = struct {
-    ram_out_addr: u64,
+    ram_out_addr: u61,
     ram_out_set: u1,
     ram_out_set_value: u64,
 };
@@ -124,7 +124,7 @@ const LogicExecutor = struct {
 
         var states_al = try std.ArrayList(State).initCapacity(alloc, len: {
             var len: usize = 0;
-            for (pins) |pin| if (pin == .out) {
+            for (pins) |pin| if (pin == .state) {
                 len += 1;
             };
             break :len len;
