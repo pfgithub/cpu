@@ -195,7 +195,7 @@ incremented.sum.forEach((v, i) => incrementer[i]!.setValue(v));
 const ram_in = builtin.in("ram_in", 64);
 const ram_in_available = builtin.in("ram_in_available", 1);
 const ram_out_addr = builtin.out("ram_out_addr", new Array(64).fill(0).map(q => builtin.const(0)));
-const ram_out_set = builtin.out("ram_out_set", new Array(64).fill(0).map(q => builtin.const(0)));
+const ram_out_set = builtin.out("ram_out_set", new Array(1).fill(0).map(q => builtin.const(0)));
 const ram_out_value = builtin.out("ram_out_set_value", new Array(64).fill(0).map(q => builtin.const(0)));
 
 // ram:

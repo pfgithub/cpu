@@ -22,47 +22,45 @@ fn IndexedSlice(comptime T: type, comptime Index: type) type {
 
 // what if instead this was struct{v: u64, u: u64} and an enum was generated from it?
 // or alternatively, what if this was handled on the js side
-const InputType = enum {
-    ram_in,
-    ram_in_available,
+const InputStruct = struct {
+    ram_in: u64,
+    ram_in_available: u1,
 };
-const OutputType = enum {
-    ram_out_addr,
-    ram_out_set,
-    ram_out_set_value,
-};
-
-fn EnumStruct(comptime Enum: type, comptime Value: type, comptime default_value: anytype) type {
-    var field_list = [_]std.builtin.TypeInfo.StructField{undefined} ** @typeInfo(Enum).Enum.fields.len;
-    // a comptime map would be useful here
-    const enum_fields: []const std.builtin.TypeInfo.EnumField = @typeInfo(Enum).Enum.fields;
-    for (enum_fields) |field, i| {
-        field_list[i] = .{ .name = field.name, .field_type = Value, .default_value = default_value, .is_comptime = false, .alignment = 0 };
+fn EnumFromStruct(comptime Struct: type) type {
+    var items = [_]std.builtin.TypeInfo.EnumField{undefined} ** @typeInfo(Struct).Struct.fields.len;
+    for (@typeInfo(Struct).Struct.fields) |field, i| {
+        items[i] = .{ .name = field.name, .value = i };
     }
-    return @Type(.{
-        .Struct = .{
+    return @Type(std.builtin.TypeInfo{
+        .Enum = .{
             .layout = .Auto,
-            .fields = &field_list,
+            .tag_type = std.math.IntFittingRange(0, items.len),
+            .fields = &items,
             .decls = &[_]std.builtin.TypeInfo.Declaration{},
-            .is_tuple = false,
+            .is_exhaustive = true,
         },
     });
 }
+const InputType = EnumFromStruct(InputStruct);
+const OutputStruct = struct {
+    ram_out_addr: u64,
+    ram_out_set: u1,
+    ram_out_set_value: u64,
+};
+const OutputType = EnumFromStruct(OutputStruct);
 
 const IOSize = u128;
-const IOShiftSize = u7;
+const IOShiftSize = std.math.Log2Int(IOSize);
 
 const InputArray = struct {
-    values: [@typeInfo(InputType).Enum.fields.len]IOSize,
+    values: [@typeInfo(InputStruct).Struct.fields.len]IOSize,
     // generate a struct type with @Type() {left: IOSize, right: IOSize, add1l: IOSize, add1r: IOSize, …}
-    const InitializationStruct = EnumStruct(InputType, IOSize, null);
-    pub fn init(istruct: InitializationStruct) InputArray {
+    pub fn init(istruct: InputStruct) InputArray {
         return InputArray{
             .values = blk: {
-                var values = [_]IOSize{undefined} ** @typeInfo(InputType).Enum.fields.len;
-                inline for (@typeInfo(InputType).Enum.fields) |field, index| {
-                    if (field.value != index) @compileError("bad");
-                    values[field.value] = @field(istruct, field.name);
+                var values = [_]IOSize{undefined} ** @typeInfo(InputStruct).Struct.fields.len;
+                inline for (@typeInfo(InputStruct).Struct.fields) |field, index| {
+                    values[index] = @field(istruct, field.name);
                 }
                 break :blk values;
             },
@@ -72,7 +70,6 @@ const InputArray = struct {
         return @intCast(u1, (iarr.values[@enumToInt(field)] >> index) & 0b1);
     }
 };
-const OutputStruct = EnumStruct(OutputType, IOSize, @as(IOSize, 0));
 const OutputArray = struct {
     values: [@typeInfo(OutputType).Enum.fields.len]IOSize = [_]IOSize{0} ** @typeInfo(OutputType).Enum.fields.len,
     pub fn set(oarr: *OutputArray, field: OutputType, index: u7, value: u1) void {
@@ -82,9 +79,12 @@ const OutputArray = struct {
         return oarr.values[@enumToInt(field)];
     }
     pub fn pack(oarr: OutputArray) OutputStruct {
-        var os: OutputStruct = .{};
-        inline for (@typeInfo(OutputType).Enum.fields) |_, i| {
-            @field(os, @tagName(@intToEnum(OutputType, i))) = oarr.get(@intToEnum(OutputType, i));
+        var os: OutputStruct = std.mem.zeroes(OutputStruct);
+        inline for (@typeInfo(OutputStruct).Struct.fields) |_, i| {
+            @field(os, @tagName(@intToEnum(OutputType, i))) = @intCast(
+                @TypeOf(@field(os, @tagName(@intToEnum(OutputType, i)))),
+                oarr.get(@intToEnum(OutputType, i)),
+            );
         }
         return os;
     }
@@ -271,7 +271,7 @@ pub fn updateInputs(outputs: OutputStruct, ram: []u64) InputArray {
         if (outputs.ram_out_addr != 1) {
             const out_addr = @intCast(usize, outputs.ram_out_addr); // crash: value is outside of ram / usize range
             if (outputs.ram_out_set == 1) {
-                ram[out_addr] = @intCast(u64, outputs.ram_out_set_value); // crash: ram_out_set_value is > 64 bytes
+                ram[out_addr] = outputs.ram_out_set_value; // crash: ram_out_set_value is > 64 bytes
             }
             break :blk .{ .value = ram[out_addr], .on = 1 };
         }
