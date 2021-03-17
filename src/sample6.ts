@@ -8,6 +8,11 @@ type Tuple<T, N extends number> = N extends 64
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
     ]
+    : N extends 56
+    ? [
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+    ]
     : N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
 type _TupleOf<T, N extends number, R extends unknown[]> = R['length'] extends N ? R : _TupleOf<T, N, [T, ...R]>;
 
@@ -224,9 +229,10 @@ incrementer.set(incremented.sum);
 const ram_in = builtin.in("ram_in", 64);
 const ram_in_available = builtin.in("ram_in_available", 1);
 
-
 const instruction_ptr = builtin.state(61, "01");
 const instruction_handling_stage = builtin.state(3, "000");
+
+const current_instruction = builtin.state(64);
 
 type Output = {
     instruction_ptr: Pins<61>,
@@ -235,6 +241,8 @@ type Output = {
     ram_out_addr: Pins<61>,
     ram_out_set: Pins<1>,
     ram_out_set_value: Pins<64>,
+
+    current_instruction: Pins<64>,
 };
 
 // ifEq(pins, builtin.constw(3, "001"))
@@ -247,6 +255,22 @@ function ifEq<PinsW extends Pin[]>(pins: PinsW, expected: PinsW): Pin {
         return xor(expcdt, pin);
     }));
 }
+const outputBranch = (cond: Pin, value: Output): Output => ({
+    instruction_ptr: ifTrue(cond, value.instruction_ptr),
+    instruction_handling_stage: ifTrue(cond, value.instruction_handling_stage),
+    ram_out_addr: ifTrue(cond, value.ram_out_addr),
+    ram_out_set: ifTrue(cond, value.ram_out_set),
+    ram_out_set_value: ifTrue(cond, value.ram_out_set_value),
+    current_instruction: ifTrue(cond, value.current_instruction),
+});
+const outputMerge = (a: Output, b: Output): Output => ({
+    instruction_ptr: orMany(a.instruction_ptr, b.instruction_ptr),
+    instruction_handling_stage: orMany(a.instruction_handling_stage, b.instruction_handling_stage),
+    ram_out_addr: orMany(a.ram_out_addr, b.ram_out_addr),
+    ram_out_set: orMany(a.ram_out_set, b.ram_out_set),
+    ram_out_set_value: orMany(a.ram_out_set_value, b.ram_out_set_value),
+    current_instruction: orMany(a.current_instruction, b.current_instruction),
+});
 
 type PinsMap<PinsW extends Pin[]> = {[key in keyof PinsW]: Pin};
 
@@ -297,56 +321,71 @@ function performInstructionFetch(): Output {
         ram_out_addr: instruction_ptr.value,
         ram_out_set: builtin.constw(1, "0"),
         ram_out_set_value: builtin.constw(64, "0"),
-    };
-}
-function performInstructionFetchArgs(): Output {
-    return {
-        instruction_ptr: instruction_ptr.value,
-        instruction_handling_stage: builtin.constw(3, "010"),
 
-        ram_out_addr: builtin.constw(61, "0"),
-        ram_out_set: builtin.constw(1, "0"),
-        ram_out_set_value: builtin.constw(64, "0010"),
+        current_instruction: builtin.constw(64, "0"),
     };
 }
+const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>} => {
+    return {
+        instruction_ptr: adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum,
+        instruction_handling_stage: builtin.constw(3, "000"),
+    };
+})();
+const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "current_instruction">}} = {
+    /// TEST (…unused×56) → print 0xFEEDC0DE to the ram_out_set_value port, then continue to the next instruction normally
+    "00010001": {eval: () => {
+        return {
+            ...increment_instruction_ptr,
+
+            ram_out_addr: builtin.constw(61, "0"),
+            ram_out_set: builtin.constw(1, "0"),
+            ram_out_set_value: builtin.constw(64, 0xFEEDC0DE.toString(2)),
+        };
+    }},
+} as const;
+const perform_instruction_fetch_args = ((): Output => {
+    // the instruction is in `ram_in`
+    // :: get the instruction id
+
+    // oh the problem is if instruction_handling_stage == 0b001, current_instruction = ram_in
+    const current_instr = ifChain<Pins<64>>(
+        (cond, a) => ifTrue(cond, a),
+        (a, b) => orMany(a, b),
+    ).when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), ram_in).else(current_instruction.value);
+
+    const instr_id = current_instr.slice(0, 8) as Pins<8>;
+    const instr_args = current_instr.slice(8, 64) as Pins<56>;
+
+    const chain = ifChain(outputBranch, outputMerge);
+    for(const [key, value] of Object.entries(instructions)) {
+        chain.when(ifEq(instr_id, builtin.constw(8, key)), {...value.eval(instr_args), current_instruction: current_instr});
+    }
+    return chain.else(getError([...builtin.constw(56, 0xBADC0DE.toString(2)), ...instr_id]));
+})();
 function orMany<PinsA extends Pin[]>(a: PinsA, b: PinsA): PinsMap<PinsA> {
     return a.map((av, i) => {
         const bv = b[i]!;
         return or(av, bv);
     }) as PinsMap<PinsA>;
 }
-function getError(): Output {
+function getError(err_code: Pins<64>): Output {
     return {
         instruction_ptr: builtin.constw(61, "0"),
-        instruction_handling_stage: instruction_handling_stage.value,
+        instruction_handling_stage: builtin.constw(3, "111"),
         ram_out_addr: builtin.constw(61, "0"),
         ram_out_set: builtin.constw(1, "0"),
-        ram_out_set_value: builtin.constw(64, "1".repeat(64)),
+        ram_out_set_value: err_code,
+        current_instruction: builtin.constw(64, "0"),
     };
 }
 function performInstructionDecode(): Output {
     // ifChain().ifEq().elseIfEq().else()
     const fetch_res = performInstructionFetch();
 
-    return ifChain<Output>(
-        (cond, value) => ({
-            instruction_ptr: ifTrue(cond, value.instruction_ptr),
-            instruction_handling_stage: ifTrue(cond, value.instruction_handling_stage),
-            ram_out_addr: ifTrue(cond, value.ram_out_addr),
-            ram_out_set: ifTrue(cond, value.ram_out_set),
-            ram_out_set_value: ifTrue(cond, value.ram_out_set_value),
-        }),
-        (a, b) => ({
-            instruction_ptr: orMany(a.instruction_ptr, b.instruction_ptr),
-            instruction_handling_stage: orMany(a.instruction_handling_stage, b.instruction_handling_stage),
-            ram_out_addr: orMany(a.ram_out_addr, b.ram_out_addr),
-            ram_out_set: orMany(a.ram_out_set, b.ram_out_set),
-            ram_out_set_value: orMany(a.ram_out_set_value, b.ram_out_set_value),
-        }),
-    )
+    return ifChain<Output>(outputBranch, outputMerge)
         .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "000")), performInstructionFetch())
-        .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), performInstructionFetchArgs())
-        .else(getError())
+        .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "111")), getError(ifTrue(toggler.value[0], builtin.constw(64, "1".repeat(64)))))
+        .else(perform_instruction_fetch_args)
     ;
 }
 
@@ -355,10 +394,12 @@ function performInstructionDecode(): Output {
 
     instruction_ptr.set(res.instruction_ptr);
     instruction_handling_stage.set(res.instruction_handling_stage);
-
+    
     const ram_out_addr = builtin.out("ram_out_addr", res.ram_out_addr);
     const ram_out_set = builtin.out("ram_out_set", res.ram_out_set);
     const ram_out_value = builtin.out("ram_out_set_value", res.ram_out_set_value);
+
+    current_instruction.set(res.current_instruction);
 }
 
 // ram:

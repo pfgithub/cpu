@@ -241,7 +241,8 @@ const LogicExecutor = struct {
         return res;
     }
 
-    pub fn cycle(le: *LogicExecutor, inputs: InputArray) OutputStruct {
+    pub fn cycle(le: *LogicExecutor, input_struct: InputStruct) OutputStruct {
+        const inputs = InputArray.init(input_struct);
         // 1: clear cache
         for (le.logic_cache.slice) |*item| item.* = 0b10;
         // 2: resolve next states
@@ -266,21 +267,21 @@ const LogicExecutor = struct {
     }
 };
 
-pub fn updateInputs(outputs: OutputStruct, ram: []u64) InputArray {
+pub fn updateInputs(outputs: OutputStruct, ram: []u64) InputStruct {
     const ram_v: struct { value: u64, on: u1 } = blk: {
-        if (outputs.ram_out_addr != 1) {
+        if (outputs.ram_out_addr != 0) {
             const out_addr = @intCast(usize, outputs.ram_out_addr); // crash: value is outside of ram / usize range
             if (outputs.ram_out_set == 1) {
                 ram[out_addr] = outputs.ram_out_set_value; // crash: ram_out_set_value is > 64 bytes
             }
             break :blk .{ .value = ram[out_addr], .on = 1 };
         }
-        break :blk .{ .value = undefined, .on = 0 };
+        break :blk .{ .value = 0, .on = 0 };
     };
-    return InputArray.init(.{
+    return .{
         .ram_in = ram_v.value,
         .ram_in_available = ram_v.on,
-    });
+    };
 }
 
 pub fn main() !void {
@@ -293,9 +294,10 @@ pub fn main() !void {
 
     var ram = try alloc.alloc(u64, 1000000); // 1mb
     defer alloc.free(ram);
-    for (ram) |*it| it.* = 0;
+    for (ram) |*it| it.* = 0xAAAAAAAA;
     ram[0] = undefined; // ram[0] is invalid and doesn't exist
-    ram[1] = 0;
+    ram[1] = 0b00000000000000000000000000000000000000000000000000000000_0001000_1;
+    ram[2] = 0b00000000000000000000000000000000000000000000000000000000_1111111_0;
 
     var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 
@@ -306,7 +308,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < 10) : (i += 1) {
         const res = executor.cycle(inputs);
-        std.log.info("{any}", .{res});
+        std.log.info("{any} {any} (ov: {x})", .{ inputs, res, res.ram_out_set_value });
         inputs = updateInputs(res, ram);
     }
 }
