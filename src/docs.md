@@ -14,3 +14,17 @@ invalid instruction;
 
 - as root: stops executing instructions and displays an error message through the RAM_OUT_SET_VALUE port
 - as user: returns to root with the error code INVALID_INSTRUCTION
+
+# Notes
+
+How to implement memory paging
+
+- Add a new u2 bit of state "memory_paging_state"
+- When fetching memory, use ...getMemoryAt(position)
+- getMemoryAt will:
+  - return the address into the page table for step 1 and setstate `memory_paging_state=1`
+- At the start of the cycle, in the main `if()`, if `memory_paging_state = 1`,
+  - send this to the memory pager to advance to step 2
+- Same for step 2
+  - This time, the memory pager puts the actual, final address into `ram_out_addr` and sets `memory_paging_state=0`
+  - Next cycle, the instruction will continue to execute as normal wherever it left off, as if nothing happened.
