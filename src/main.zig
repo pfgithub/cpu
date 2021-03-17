@@ -50,14 +50,17 @@ fn EnumStruct(comptime Enum: type, comptime Value: type) type {
     });
 }
 
+const IOSize = u128;
+const IOShiftSize = u7;
+
 const InputArray = struct {
-    values: [@typeInfo(InputType).Enum.fields.len]u64,
-    // generate a struct type with @Type() {left: u64, right: u64, add1l: u64, add1r: u64, …}
-    const InitializationStruct = EnumStruct(InputType, u64);
+    values: [@typeInfo(InputType).Enum.fields.len]IOSize,
+    // generate a struct type with @Type() {left: IOSize, right: IOSize, add1l: IOSize, add1r: IOSize, …}
+    const InitializationStruct = EnumStruct(InputType, IOSize);
     pub fn init(istruct: InitializationStruct) InputArray {
         return InputArray{
             .values = blk: {
-                var values = [_]u64{undefined} ** @typeInfo(InputType).Enum.fields.len;
+                var values = [_]IOSize{undefined} ** @typeInfo(InputType).Enum.fields.len;
                 inline for (@typeInfo(InputType).Enum.fields) |field, index| {
                     if (field.value != index) @compileError("bad");
                     values[field.value] = @field(istruct, field.name);
@@ -66,8 +69,17 @@ const InputArray = struct {
             },
         };
     }
-    pub fn get(iarr: InputArray, field: InputType, index: u6) u1 {
+    pub fn get(iarr: InputArray, field: InputType, index: u7) u1 {
         return @intCast(u1, (iarr.values[@enumToInt(field)] >> index) & 0b1);
+    }
+};
+const OutputArray = struct {
+    values: [@typeInfo(OutputType).Enum.fields.len]IOSize = [_]IOSize{0} ** @typeInfo(OutputType).Enum.fields.len,
+    pub fn set(oarr: *OutputArray, field: OutputType, index: u7, value: u1) void {
+        oarr.values[@enumToInt(field)] |= @as(IOSize, value) << index;
+    }
+    pub fn get(oarr: OutputArray, field: OutputType) IOSize {
+        return oarr.values[@enumToInt(field)];
     }
 };
 
@@ -76,8 +88,8 @@ const LogicExecutor = struct {
         nor: struct { deps: [2]PinIndex },
         constant: struct { value: u1 },
         state: struct { state_id: StateIndex },
-        input: struct { input_type: InputType, input_index: u6 },
-        output: struct { output_id: usize }, // output_index, output_offset
+        input: struct { input_type: InputType, input_index: u7 },
+        output: struct { output_id: usize },
     };
     const State = struct {
         value: u1,
@@ -86,8 +98,9 @@ const LogicExecutor = struct {
     };
     const Output = struct {
         output_type: OutputType,
+        output_index: u7,
         dep: PinIndex,
-        value: usize,
+        value: u1,
     };
     const PinIndex = enum(usize) { _ };
     const StateIndex = enum(usize) { _ };
@@ -120,8 +133,11 @@ const LogicExecutor = struct {
         });
         errdefer outputs_al.deinit();
 
-        var input_kind_seen_count = std.AutoHashMap(InputType, u6).init(alloc);
+        var input_kind_seen_count = std.AutoHashMap(InputType, u7).init(alloc);
         defer input_kind_seen_count.deinit();
+
+        var output_kind_seen_count = std.AutoHashMap(OutputType, u7).init(alloc);
+        defer output_kind_seen_count.deinit();
 
         var logic_cache = try alloc.alloc(u2, pins.len);
         errdefer alloc.free(logic_cache);
@@ -140,8 +156,8 @@ const LogicExecutor = struct {
                     const input_type = std.meta.stringToEnum(InputType, in.name) orelse @panic("bad input type");
                     const v = try input_kind_seen_count.getOrPut(input_type);
                     if (!v.found_existing) v.entry.value = 0 else {
-                        if (v.entry.value == std.math.maxInt(u6)) {
-                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(u6), input_type });
+                        if (v.entry.value == std.math.maxInt(u7)) {
+                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(u7), input_type });
                             @panic("crash");
                         }
                         v.entry.value += 1;
@@ -150,8 +166,21 @@ const LogicExecutor = struct {
                 },
                 .out => |out| blk: {
                     const output_type = std.meta.stringToEnum(OutputType, out.name) orelse @panic("bad output type");
+                    const v = try output_kind_seen_count.getOrPut(output_type);
+                    if (!v.found_existing) v.entry.value = 0 else {
+                        if (v.entry.value == std.math.maxInt(u7)) {
+                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(u7), output_type });
+                            @panic("crash");
+                        }
+                        v.entry.value += 1;
+                    }
                     const index = outputs_al.items.len;
-                    outputs_al.appendAssumeCapacity(Output{ .output_type = output_type, .dep = @intToEnum(PinIndex, out.dep), .value = undefined });
+                    outputs_al.appendAssumeCapacity(Output{
+                        .output_type = output_type,
+                        .output_index = v.entry.value,
+                        .dep = @intToEnum(PinIndex, out.dep),
+                        .value = undefined,
+                    });
                     break :blk .{ .output = .{ .output_id = index } };
                 },
             };
@@ -194,7 +223,7 @@ const LogicExecutor = struct {
         return res;
     }
 
-    pub fn cycle(le: *LogicExecutor, inputs: InputArray) void {
+    pub fn cycle(le: *LogicExecutor, inputs: InputArray) OutputArray {
         // 1: clear cache
         for (le.logic_cache.slice) |*item| item.* = 0b10;
         // 2: resolve next states
@@ -210,6 +239,12 @@ const LogicExecutor = struct {
             state.value = state.next_value;
             state.next_value = undefined;
         }
+        // 5: construct return value
+        var outv = OutputArray{};
+        for (le.outputs) |output| {
+            outv.set(output.output_type, output.output_index, output.value);
+        }
+        return outv;
     }
 };
 
@@ -222,8 +257,8 @@ pub fn main() !void {
     defer executor.deinit();
 
     const inputs = InputArray.init(.{
-        .left = 0b1,
-        .right = 0b1,
+        .left = 108,
+        .right = 212,
         .add1l = 0b1,
         .add1r = 0b1,
         .add1c = 0b1,
@@ -231,16 +266,11 @@ pub fn main() !void {
 
     const timer = try std.time.Timer.start();
 
-    executor.cycle(inputs);
-    executor.cycle(inputs);
-    executor.cycle(inputs);
-    executor.cycle(inputs);
-    executor.cycle(inputs);
-    executor.cycle(inputs);
+    const res = executor.cycle(inputs);
 
     const end = timer.read();
-    for (executor.outputs) |output| {
-        std.log.info("{}: {}", .{ output.output_type, output.value });
+    for (res.values) |value, i| {
+        std.log.info("{}: {}", .{ @intToEnum(OutputType, @intCast(std.meta.TagType(OutputType), i)), value });
     }
     std.log.info("Took: {}", .{end});
 }
