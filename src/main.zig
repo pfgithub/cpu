@@ -33,8 +33,40 @@ const OutputType = enum {
     counter,
 };
 
-const Inputs = struct {
-    values: []usize,
+const InputArray = struct {
+    values: [@typeInfo(InputType).Enum.fields.len]u64,
+    // generate a struct type with @Type() {left: u64, right: u64, add1l: u64, add1r: u64, …}
+    const InitializationStruct = blk: {
+        var field_list = [_]std.builtin.TypeInfo.StructField{undefined} ** @typeInfo(InputType).Enum.fields.len;
+        // a comptime map would be useful here
+        const enum_fields: []const std.builtin.TypeInfo.EnumField = @typeInfo(InputType).Enum.fields;
+        for (enum_fields) |field, i| {
+            field_list[i] = .{ .name = field.name, .field_type = u64, .default_value = null, .is_comptime = false, .alignment = 0 };
+        }
+        break :blk @Type(.{
+            .Struct = .{
+                .layout = .Auto,
+                .fields = &field_list,
+                .decls = &[_]std.builtin.TypeInfo.Declaration{},
+                .is_tuple = false,
+            },
+        });
+    };
+    pub fn init(istruct: InitializationStruct) InputArray {
+        return InputArray{
+            .values = blk: {
+                var values = [_]u64{undefined} ** @typeInfo(InputType).Enum.fields.len;
+                inline for (@typeInfo(InputType).Enum.fields) |field, index| {
+                    if (field.value != index) @compileError("bad");
+                    values[field.value] = @field(istruct, field.name);
+                }
+                break :blk values;
+            },
+        };
+    }
+    pub fn get(iarr: InputArray, field: InputType, index: u6) u1 {
+        return @intCast(u1, (iarr.values[@enumToInt(field)] >> index) & 0b1);
+    }
 };
 
 const LogicExecutor = struct {
@@ -42,8 +74,8 @@ const LogicExecutor = struct {
         nor: struct { deps: [2]PinIndex },
         constant: struct { value: u1 },
         state: struct { state_id: StateIndex },
-        input: struct { input_type: InputType, input_index: usize },
-        output: struct { output_id: usize },
+        input: struct { input_type: InputType, input_index: u6 },
+        output: struct { output_id: usize }, // output_index, output_offset
     };
     const State = struct {
         value: u1,
@@ -86,7 +118,7 @@ const LogicExecutor = struct {
         });
         errdefer outputs_al.deinit();
 
-        var input_kind_seen_count = std.AutoHashMap(InputType, usize).init(alloc);
+        var input_kind_seen_count = std.AutoHashMap(InputType, u6).init(alloc);
         defer input_kind_seen_count.deinit();
 
         var logic_cache = try alloc.alloc(u2, pins.len);
@@ -105,8 +137,13 @@ const LogicExecutor = struct {
                 .in => |in| blk: {
                     const input_type = std.meta.stringToEnum(InputType, in.name) orelse @panic("bad input type");
                     const v = try input_kind_seen_count.getOrPut(input_type);
-                    if (!v.found_existing) v.entry.value = 0;
-                    v.entry.value += 1;
+                    if (!v.found_existing) v.entry.value = 0 else {
+                        if (v.entry.value == std.math.maxInt(u6)) {
+                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(u6), input_type });
+                            @panic("crash");
+                        }
+                        v.entry.value += 1;
+                    }
                     break :blk .{ .input = .{ .input_type = input_type, .input_index = v.entry.value } };
                 },
                 .out => |out| blk: {
@@ -132,7 +169,7 @@ const LogicExecutor = struct {
         le.alloc.free(le.logic_cache.slice);
     }
 
-    fn resolve(le: *LogicExecutor, pin_index: PinIndex) u1 {
+    fn resolve(le: *LogicExecutor, pin_index: PinIndex, inputs: InputArray) u1 {
         if (le.logic_cache.get(pin_index) & 0b10 == 0) return @intCast(u1, le.logic_cache.get(pin_index));
         const pin = le.pins.get(pin_index);
         const res: u1 = switch (pin) {
@@ -144,27 +181,27 @@ const LogicExecutor = struct {
             .nor => |nor| for (nor.deps) |dep| {
                 // potential optimization here : rather than going left to right, go from lowest depth to highest depth.
                 // check caches first in case a cache is available
-                if (le.resolve(dep) == 1) break @as(u1, 0);
+                if (le.resolve(dep, inputs) == 1) break @as(u1, 0);
             } else 1,
             .constant => |constant| constant.value,
             .state => |state| le.states.get(state.state_id).value,
-            .input => |in| 0, // TODO
+            .input => |in| inputs.get(in.input_type, in.input_index),
             .output => unreachable, // not supposed to depend on output; bad
         };
         le.logic_cache.set(pin_index, res);
         return res;
     }
 
-    pub fn cycle(le: *LogicExecutor) void {
+    pub fn cycle(le: *LogicExecutor, inputs: InputArray) void {
         // 1: clear cache
         for (le.logic_cache.slice) |*item| item.* = 0b10;
         // 2: resolve next states
         for (le.states.slice) |*state| {
-            state.next_value = le.resolve(state.dep);
+            state.next_value = le.resolve(state.dep, inputs);
         }
         // 3: resolve outputs
         for (le.outputs) |*output| {
-            output.value = le.resolve(output.dep);
+            output.value = le.resolve(output.dep, inputs);
         }
         // 4: set next states
         for (le.states.slice) |*state| {
@@ -182,14 +219,22 @@ pub fn main() !void {
     var executor = try LogicExecutor.init(alloc, logic.pins);
     defer executor.deinit();
 
+    const inputs = InputArray.init(.{
+        .left = 0b1,
+        .right = 0b1,
+        .add1l = 0b1,
+        .add1r = 0b1,
+        .add1c = 0b1,
+    });
+
     const timer = try std.time.Timer.start();
 
-    executor.cycle();
-    executor.cycle();
-    executor.cycle();
-    executor.cycle();
-    executor.cycle();
-    executor.cycle();
+    executor.cycle(inputs);
+    executor.cycle(inputs);
+    executor.cycle(inputs);
+    executor.cycle(inputs);
+    executor.cycle(inputs);
+    executor.cycle(inputs);
 
     const end = timer.read();
     for (executor.outputs) |output| {
