@@ -33,25 +33,27 @@ const OutputType = enum {
     counter,
 };
 
+fn EnumStruct(comptime Enum: type, comptime Value: type) type {
+    var field_list = [_]std.builtin.TypeInfo.StructField{undefined} ** @typeInfo(Enum).Enum.fields.len;
+    // a comptime map would be useful here
+    const enum_fields: []const std.builtin.TypeInfo.EnumField = @typeInfo(Enum).Enum.fields;
+    for (enum_fields) |field, i| {
+        field_list[i] = .{ .name = field.name, .field_type = Value, .default_value = null, .is_comptime = false, .alignment = 0 };
+    }
+    return @Type(.{
+        .Struct = .{
+            .layout = .Auto,
+            .fields = &field_list,
+            .decls = &[_]std.builtin.TypeInfo.Declaration{},
+            .is_tuple = false,
+        },
+    });
+}
+
 const InputArray = struct {
     values: [@typeInfo(InputType).Enum.fields.len]u64,
     // generate a struct type with @Type() {left: u64, right: u64, add1l: u64, add1r: u64, …}
-    const InitializationStruct = blk: {
-        var field_list = [_]std.builtin.TypeInfo.StructField{undefined} ** @typeInfo(InputType).Enum.fields.len;
-        // a comptime map would be useful here
-        const enum_fields: []const std.builtin.TypeInfo.EnumField = @typeInfo(InputType).Enum.fields;
-        for (enum_fields) |field, i| {
-            field_list[i] = .{ .name = field.name, .field_type = u64, .default_value = null, .is_comptime = false, .alignment = 0 };
-        }
-        break :blk @Type(.{
-            .Struct = .{
-                .layout = .Auto,
-                .fields = &field_list,
-                .decls = &[_]std.builtin.TypeInfo.Declaration{},
-                .is_tuple = false,
-            },
-        });
-    };
+    const InitializationStruct = EnumStruct(InputType, u64);
     pub fn init(istruct: InitializationStruct) InputArray {
         return InputArray{
             .values = blk: {
