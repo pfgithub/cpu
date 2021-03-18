@@ -245,6 +245,12 @@ const registers_array = new Array(16).fill(0).map(q => builtin.state(64));
 
 const registers: RegisterSet = registers_array.map(reg => reg.value) as RegisterSet;
 
+// const page_table_ptr = builtin.state(61, "0"); // the value of this determines if the cpu is in user or root mode
+// run_user «reg:page_table_addr» «reg:start_addr(user)»
+// :: this does a few things
+//  - stores exception_jmp = (instruction_ptr + 1) 
+//  - sets page table
+//  - jumps to the specified instruction
 
 // returns an updated set of registers with register register_id set to register_value
 function setRegister(registers: RegisterSet, register_id: Pins<4>, register_value: Pins<64>): RegisterSet {
