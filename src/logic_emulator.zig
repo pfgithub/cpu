@@ -301,6 +301,47 @@ pub fn updateInputs(outputs: OutputStruct, ram: []u64) InputStruct {
     };
 }
 
+pub fn range(max: usize) []const void {
+    return @as([]const void, &[_]void{}).ptr[0..max];
+}
+
+// <X extends int>(rest: u{X}, bits: []u{int}) u{X}
+fn bitArray(comptime Rest: type, bits: anytype) Rest {
+    comptime var shift: comptime_int = 0;
+    var res: Rest = 0;
+    inline for (@typeInfo(@TypeOf(bits)).Struct.fields) |field| {
+        comptime const int_bits = @typeInfo(field.field_type).Int.bits;
+        const bit = @field(bits, field.name);
+        res |= @as(Rest, bit) << shift;
+        comptime shift += int_bits;
+    }
+    comptime if (shift != @typeInfo(Rest).Int.bits) @compileError("bits don't add up to specified bit count");
+    return res;
+}
+
+// zig fmt: off
+const instr = opaque {
+    const Register = enum(u4) {
+        r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, rA, rB, rC, rD, rE, rF,
+// zig fmt: on
+        pub fn int(reg: Register) u4 {
+            return @enumToInt(reg);
+        }
+     };
+    pub fn instruction(id: u8, args: u56) u64 {
+        return bitArray(u64, .{ id, args });
+    }
+    pub fn li(reg: Register, immediate: u52) u64 {
+        return instruction(0b0000001_0, bitArray(u56, .{ reg.int(), immediate }));
+    }
+    pub fn add(a: Register, b: Register, out: Register) u64 {
+        return instruction(0b0000010_0, bitArray(u56, .{ a.int(), b.int(), out.int(), @as(u44, 0) }));
+    }
+    pub fn load(a: Register, out: Register) u64 {
+        return instruction(0b0000011_0, bitArray(u56, .{ a.int(), out.int(), @as(u48, 0) }));
+    }
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
@@ -313,12 +354,12 @@ pub fn main() !void {
     defer alloc.free(ram);
     for (ram) |*it| it.* = 0xAAAAAAAA;
     ram[0] = undefined; // ram[0] is invalid and doesn't exist
-    ram[1] = 0b0000000000000000000000000000000000000000011110011010_0000_0000001_0; // (li r0 0b11110011010)
-    ram[2] = 0b0000000000000000000000000000000000000011010001111010_0001_0000001_0; // (li r1 0b11010001111010)
-    ram[3] = 0b00000000000000000000000000000000000000000000_0010_0001_0000_0000010_0; // (add r0 + r1 → r2)
-    ram[4] = 0b0000000000000000000000000000000000000000000000001000_0011_0000001_0; // (li r3 0b1000)
-    ram[5] = 0b000000000000000000000000000000000000000000000000_0000_0011_0000011_0; // (load r3 → r0)
-    ram[6] = 0b00000000000000000000000000000000000000000000000000000000_1111111_0; // (halt)
+    ram[1] = instr.li(.r0, 0x79A);
+    ram[2] = instr.li(.r1, 0x347A);
+    ram[3] = instr.add(.r0, .r1, .r2);
+    ram[4] = instr.li(.r3, 0b1000);
+    ram[5] = instr.load(.r3, .r0);
+    ram[6] = instr.instruction(0b1111111_0, 0); // (halt)
 
     var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 
