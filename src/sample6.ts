@@ -71,6 +71,7 @@ const builtin = {
         return builtin.addPin({kind: "const", value});
     },
     constw<Length extends number>(w: Length, initial: string): Pins<Length> {
+        if(initial.length > w) throw new Error("bad constw");
         return new Array(w).fill(0).map((_, i) => {
             return builtin.const(initial.charAt(initial.length - i - 1) === "1" ? 1 : 0);
         }) as Pins<Length>;
@@ -291,7 +292,7 @@ function ifEq<PinsW extends Pin[]>(pins: PinsW, expected: PinsW): Pin {
         return xor(expcdt, pin);
     }));
 }
-const outputBranch = (cond: Pin, value: Output): Output => ({
+const outputNCIBranch = (cond: Pin, value: NCIOutput): NCIOutput => ({
     instruction_ptr: ifTrue(cond, value.instruction_ptr),
     instruction_handling_stage: ifTrue(cond, value.instruction_handling_stage),
     ram: {
@@ -299,12 +300,15 @@ const outputBranch = (cond: Pin, value: Output): Output => ({
         out_set: ifTrue(cond, value.ram.out_set),
         out_set_value: ifTrue(cond, value.ram.out_set_value),
     },
-    current_instruction: ifTrue(cond, value.current_instruction),
     registers: value.registers.map((reg, i) => {
         return ifTrue(cond, reg);
     }) as RegisterSet,
 });
-const outputMerge = (a: Output, b: Output): Output => ({
+const outputBranch = (cond: Pin, value: Output): Output => ({
+    ...outputNCIBranch(cond, value),
+    current_instruction: ifTrue(cond, value.current_instruction),
+})
+const outputNCIMerge = (a: NCIOutput, b: NCIOutput): NCIOutput => ({
     instruction_ptr: orMany(a.instruction_ptr, b.instruction_ptr),
     instruction_handling_stage: orMany(a.instruction_handling_stage, b.instruction_handling_stage),
     ram: {
@@ -312,10 +316,13 @@ const outputMerge = (a: Output, b: Output): Output => ({
         out_set: orMany(a.ram.out_set, b.ram.out_set),
         out_set_value: orMany(a.ram.out_set_value, b.ram.out_set_value),
     },
-    current_instruction: orMany(a.current_instruction, b.current_instruction),
     registers: a.registers.map((reg, i) => {
         return orMany(reg, b.registers[i]!);
     }) as RegisterSet,
+});
+const outputMerge = (a: Output, b: Output): Output => ({
+    ...outputNCIMerge(a, b),
+    current_instruction: orMany(a.current_instruction, b.current_instruction),
 });
 
 type PinsMap<PinsW extends Pin[]> = {[key in keyof PinsW]: Pin};
@@ -399,7 +406,8 @@ const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_h
         ram: fetchRam(instruction_ptr.value),
     };
 })();
-const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "current_instruction">}} = {
+type NCIOutput = Omit<Output, "current_instruction">;
+const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
     /// LI (reg×4)(immediate×52)
     "00000010": {eval: (args: Pins<56>) => {
         const register_id = args.slice(0, 4) as Pins<4>;
@@ -423,6 +431,33 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
             registers: setRegister(registers, reg_out, add_res.sum),
             // TODO set overflow flag on overflow
         };
+    }},
+    // LOAD (load_addr×4)(out_reg×4)(unused×48)
+    "00000110": {eval: (args: Pins<56>): NCIOutput => {
+        // 2 steps. 1: read memory. 2: set register.
+        const load_addr_reg = getRegister(registers, args.slice(0, 4) as Pins<4>);
+        const out_reg = args.slice(4, 8) as Pins<4>;
+
+        const load_addr = load_addr_reg.slice(3, 64) as Pins<61>; // first 3 bits are ignored
+        const expct_zero = load_addr_reg.slice(0, 3);
+
+        return ifChain(outputNCIBranch, outputNCIMerge)
+            // address must be 8 bit aligned
+            .when(not(ifEq(expct_zero, builtin.constw(3, "000"))), getError(builtin.constw(64, 0xB4D41167.toString(2))))
+            .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), ((): NCIOutput => ({
+                instruction_ptr: instruction_ptr.value,
+                instruction_handling_stage: builtin.constw(3, "010"),
+
+                ram: fetchRam(load_addr),
+
+                registers: registers,
+            }))())
+            .else(((): NCIOutput => ({
+                ...increment_instruction_ptr,
+
+                registers: setRegister(registers, out_reg, ram_in),
+            }))())
+        ;
     }},
 } as const;
 const perform_instruction_fetch_args = ((): Output => {

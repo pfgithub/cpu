@@ -12,6 +12,16 @@ loads the 52-bit immediate into the specified register. not sign extended.
 
 stores `reg_c = reg_a + reg_b` and sets the overflow flag (TODO) if there is an overflow
 
+## load 0b{unused×48}{reg_b×4}{reg_a×4}_0000011_0
+
+reads a 64b-aligned value from memory. `reg_b = reg_a.*`.
+
+if the value is not 8-bit aligned, an error occurs `INVALID_ALIGN`
+
+if memory paging is enabled and `reg_a` is not an available piece of memory, the program will exit with the code `INVALID_ACCESS`
+
+note that `0` is never a valid address.
+
 ## halt: 0b00000000000000000000000000000000000000000000000000000000_1111111_0
 
 invalid instruction;
