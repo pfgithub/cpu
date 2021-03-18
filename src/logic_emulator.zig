@@ -343,6 +343,9 @@ const instr = opaque {
     pub fn store(addr: Register, value: Register) u64 {
         return instruction(0b0000100_0, bitArray(u56, .{ addr.int(), value.int(), @as(u48, 0) }));
     }
+    pub fn jmp(res: Register) u64 {
+        return instruction(0b0000101_0, bitArray(u56, .{ res.int(), @as(u52, 0) }));
+    }
 };
 
 pub fn main() !void {
@@ -362,11 +365,15 @@ pub fn main() !void {
     ram[3] = instr.add(.r0, .r1, .r2);
     ram[4] = instr.li(.r3, 1 << 3);
     ram[5] = instr.load(.r3, .r0);
-    ram[6] = instr.li(.r3, 9 << 3);
+    ram[6] = instr.li(.r3, 9 << 3); // li .r3 &replace_this_instr
     ram[7] = instr.li(.r1, @intCast(u52, instr.li(.r1, 0xC0DE0000)));
     ram[8] = instr.store(.r3, .r1);
-    ram[9] = instr.li(.r1, 0xBAD);
-    ram[10] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[9] = instr.li(.r1, 0xBAD); // replace_this_instr←
+    ram[10] = instr.li(.r0, 13 << 3); // li .r7 &jmp_res
+    ram[11] = instr.jmp(.r0);
+    ram[12] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[13] = instr.li(.r2, 0x11C0DE55); // jmp_res←
+    ram[14] = instr.instruction(0b1111111_0, 0); // (halt)
 
     var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 
@@ -377,7 +384,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < 20) : (i += 1) {
         const res = executor.cycle(inputs);
-        std.log.info("r0: {X}, r1: {X}, r2: {X}, r3: {X}", .{ res.r0, res.r1, res.r2, res.r3 });
+        std.log.info("r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ res.r0, res.r1, res.r2, res.r3, res.ram_out_set_value });
         inputs = updateInputs(res, ram);
     }
 }

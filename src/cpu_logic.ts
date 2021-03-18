@@ -374,7 +374,7 @@ function ifChain<T>(branch: (cond: Pin, value: T) => T, merge: (a: T, b: T) => T
 // 0b111 - error, everything is wrong. don't do anything and display an error LED.
 function performInstructionFetch(): Output {
     return {
-        ...increment_instruction_ptr,
+        ...jumpToAddr(instruction_ptr.value),
         
         registers: registers,
 
@@ -403,14 +403,17 @@ const no_ram: RamPins = {
     out_set_value: builtin.constw(64, "0"),
 };
 
-const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>, ram: RamPins} => {
-    const incremented = adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum;
+function jumpToAddr(addr: Pins<61>): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>, ram: RamPins} {
     return {
-        instruction_ptr: incremented,
+        instruction_ptr: addr,
         instruction_handling_stage: builtin.constw(3, "001"),
 
-        ram: fetchRam(instruction_ptr.value),
+        ram: fetchRam(addr),
     };
+}
+const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>, ram: RamPins} => {
+    const incremented = adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum;
+    return jumpToAddr(incremented);
 })();
 type NCIOutput = Omit<Output, "current_instruction">;
 const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
@@ -485,19 +488,36 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
         return ifChain(outputNCIBranch, outputNCIMerge)
             // address must be 8 bit aligned
             .when(not(ifEq(expct_zero, builtin.constw(3, "000"))), getError(builtin.constw(64, 0xB4D41167.toString(2))))
-            .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), ((): NCIOutput => ({
+            .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), {
                 instruction_ptr: instruction_ptr.value,
                 instruction_handling_stage: builtin.constw(3, "010"),
 
                 ram: setRam(store_addr, store_value),
 
                 registers: registers,
-            }))())
-            .else(((): NCIOutput => ({
+            })
+            .else({
                 ...increment_instruction_ptr,
 
                 registers: registers,
-            }))())
+            })
+        ;
+    }},
+    /// JMP (reg×4)(unused×52)
+    "00001010": {eval: (args: Pins<56>) => {
+        const register_id = args.slice(0, 4) as Pins<4>;
+        const register_value = getRegister(registers, register_id);
+
+        const jmp_addr = register_value.slice(3, 64) as Pins<61>;
+        const expct_zero = register_value.slice(0, 3) as Pins<3>;
+
+        return ifChain(outputNCIBranch, outputNCIMerge)
+            .when(not(ifEq(expct_zero, builtin.constw(3, "000"))), getError(builtin.constw(64, 0xB4D41167.toString(2))))
+            .else({
+                ...jumpToAddr(jmp_addr),
+
+                registers: registers,
+            })
         ;
     }},
 } as const;

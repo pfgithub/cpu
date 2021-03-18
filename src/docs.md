@@ -32,6 +32,10 @@ writes a 64 bit value to the 64b-aligned memory address `reg_addr`
 
 if the address is misaligned, error. if paging is enabled and the address does not refer to a valid page, error.
 
+## jmp 0b{unused×52}{reg_addr×4}__0000101_0
+
+rather than continuing at the next instruction, continues at (reg_addr)
+
 ## halt: 0b00000000000000000000000000000000000000000000000000000000_1111111_0
 
 invalid instruction;
