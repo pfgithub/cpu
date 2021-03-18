@@ -234,6 +234,32 @@ const instruction_handling_stage = builtin.state(3, "000");
 
 const current_instruction = builtin.state(64);
 
+const registers_array = new Array(16).fill(0).map(q => builtin.state(64));
+
+const registers: RegisterSet = registers_array.map(reg => reg.value) as RegisterSet;
+
+type RegisterSet = Tuple<Pins<64>, 16>;
+
+// returns an updated set of registers with register register_id set to register_value
+function setRegister(registers: RegisterSet, register_id: Pins<4>, register_value: Pins<64>): RegisterSet {
+    return registers.map((value, i): Pins<64> => {
+        const condition = ifEq(register_id, builtin.constw(4, i.toString(2)));
+        return orMany(
+            ifTrue(condition, register_value),
+            ifTrue(not(condition), register_value),
+        );
+    }) as RegisterSet;
+}
+// returns the value of the register with the given name
+function getRegister(registers: RegisterSet, register_id: Pins<4>): Pins<64> {
+    let res = builtin.constw(64, "0");
+    registers.forEach((register_value, i) => {
+        res = orMany(res, ifTrue(ifEq(register_id, builtin.constw(4, i.toString(2))), register_value));
+    });
+    return res;
+}
+// set two registers: eg
+// setRegister(setRegister(registers, r1_id, r1_value), r2_id, r2_value)
 
 type RamPins = {
     out_addr: Pins<61>,
@@ -245,6 +271,7 @@ type Output = {
     instruction_handling_stage: Pins<3>,
 
     ram: RamPins,
+    registers: RegisterSet,
 
     current_instruction: Pins<64>,
 };
@@ -268,6 +295,9 @@ const outputBranch = (cond: Pin, value: Output): Output => ({
         out_set_value: ifTrue(cond, value.ram.out_set_value),
     },
     current_instruction: ifTrue(cond, value.current_instruction),
+    registers: value.registers.map((reg, i) => {
+        return ifTrue(cond, reg);
+    }) as RegisterSet,
 });
 const outputMerge = (a: Output, b: Output): Output => ({
     instruction_ptr: orMany(a.instruction_ptr, b.instruction_ptr),
@@ -278,6 +308,9 @@ const outputMerge = (a: Output, b: Output): Output => ({
         out_set_value: orMany(a.ram.out_set_value, b.ram.out_set_value),
     },
     current_instruction: orMany(a.current_instruction, b.current_instruction),
+    registers: a.registers.map((reg, i) => {
+        return orMany(reg, b.registers[i]!);
+    }) as RegisterSet,
 });
 
 type PinsMap<PinsW extends Pin[]> = {[key in keyof PinsW]: Pin};
@@ -327,6 +360,7 @@ function performInstructionFetch(): Output {
         instruction_handling_stage: builtin.constw(3, "001"),
 
         ram: fetchRam(instruction_ptr.value),
+        registers: registers,
 
         current_instruction: builtin.constw(64, "0"),
     };
@@ -369,7 +403,8 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
                 out_addr: builtin.constw(61, "0"),
                 out_set: builtin.constw(1, "0"),
                 out_set_value: builtin.constw(64, 0xFEEDC0DE.toString(2)),
-            }
+            },
+            registers: registers,
         };
     }},
 } as const;
@@ -407,6 +442,7 @@ function getError(err_code: Pins<64>): Output {
             out_set: builtin.constw(1, "0"),
             out_set_value: err_code,
         },
+        registers: registers,
         current_instruction: builtin.constw(64, "0"),
     };
 }
@@ -430,6 +466,10 @@ function performInstructionDecode(): Output {
     const ram_out_addr = builtin.out("ram_out_addr", res.ram.out_addr);
     const ram_out_set = builtin.out("ram_out_set", res.ram.out_set);
     const ram_out_value = builtin.out("ram_out_set_value", res.ram.out_set_value);
+
+    res.registers.forEach((reg, i) => {
+        registers_array[i]!.set(reg);
+    });
 
     current_instruction.set(res.current_instruction);
 }
