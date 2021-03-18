@@ -8,7 +8,7 @@ build/run:
 
 status:
 
-- supports a few instructions (check [docs](docs.md) for a list of supported instructions)
+- supports a few instructions (check [docs](src/docs.md) for a list of supported instructions)
 
 goals:
 
