@@ -308,7 +308,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < 10) : (i += 1) {
         const res = executor.cycle(inputs);
-        std.log.info("{any} {any} (ov: {x})", .{ inputs, res, res.ram_out_set_value });
+        std.log.info("{any} {any} (ov: {X})", .{ inputs, res, res.ram_out_set_value });
         inputs = updateInputs(res, ram);
     }
 }
