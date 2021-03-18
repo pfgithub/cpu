@@ -251,7 +251,7 @@ function setRegister(registers: RegisterSet, register_id: Pins<4>, register_valu
         const condition = ifEq(register_id, builtin.constw(4, i.toString(2)));
         return orMany(
             ifTrue(condition, register_value),
-            ifTrue(not(condition), register_value),
+            ifTrue(not(condition), value),
         );
     }) as RegisterSet;
 }
@@ -392,6 +392,7 @@ const no_ram: RamPins = {
     out_set_value: builtin.constw(64, "0"),
 };
 
+// TODO next cycle's instruction fetch can start immediately rather than waiting 2 ticks between instructions
 const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>} => {
     return {
         instruction_ptr: adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum,
@@ -421,6 +422,21 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
 
             ram: no_ram,
             registers: setRegister(registers, register_id, [...immediate, ...builtin.constw(12, "0")]),
+        };
+    }},
+    /// ADD (reg×4)(reg×4)(reg×4)(unused×44)
+    "00000100": {eval: (args: Pins<56>) => {
+        const reg_a_in = args.slice(0, 4) as Pins<4>;
+        const reg_b_in = args.slice(4, 8) as Pins<4>;
+        const reg_out = args.slice(8, 12) as Pins<4>;
+
+        const add_res = adder(64, getRegister(registers, reg_a_in), getRegister(registers, reg_b_in), builtin.const(0));
+        return {
+            ...increment_instruction_ptr,
+
+            ram: no_ram,
+            registers: setRegister(registers, reg_out, add_res.sum),
+            // TODO set overflow flag on overflow
         };
     }},
 } as const;
@@ -485,6 +501,9 @@ function performInstructionDecode(): Output {
 
     res.registers.forEach((reg, i) => {
         registers_array[i]!.set(reg);
+    });
+    res.registers.forEach((reg, i) => {
+        builtin.out("r"+i.toString(16).toUpperCase(), reg);
     });
 
     current_instruction.set(res.current_instruction);

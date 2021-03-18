@@ -46,6 +46,23 @@ const OutputStruct = struct {
     ram_out_addr: u61,
     ram_out_set: u1,
     ram_out_set_value: u64,
+
+    r0: u64,
+    r1: u64,
+    r2: u64,
+    r3: u64,
+    r4: u64,
+    r5: u64,
+    r6: u64,
+    r7: u64,
+    r8: u64,
+    r9: u64,
+    rA: u64,
+    rB: u64,
+    rC: u64,
+    rD: u64,
+    rE: u64,
+    rF: u64,
 };
 const OutputType = EnumFromStruct(OutputStruct);
 
@@ -296,9 +313,11 @@ pub fn main() !void {
     defer alloc.free(ram);
     for (ram) |*it| it.* = 0xAAAAAAAA;
     ram[0] = undefined; // ram[0] is invalid and doesn't exist
-    ram[1] = 0b0000000000000000000000000000000000000000011110011010_0010_0000001_0; // (li r2 0b11110011010)
-    ram[2] = 0b00000000000000000000000000000000000000000000000000000000_0001000_1; // (test)
-    ram[3] = 0b00000000000000000000000000000000000000000000000000000000_1111111_0; // (halt)
+    ram[1] = 0b0000000000000000000000000000000000000000011110011010_0000_0000001_0; // (li r0 0b11110011010)
+    ram[2] = 0b0000000000000000000000000000000000000011010001111010_0001_0000001_0; // (li r1 0b11010001111010)
+    ram[3] = 0b00000000000000000000000000000000000000000000_0010_0001_0000_0000010_0; // (add r0 r1 r2)
+    ram[4] = 0b00000000000000000000000000000000000000000000000000000000_0001000_1; // (test)
+    ram[5] = 0b00000000000000000000000000000000000000000000000000000000_1111111_0; // (halt)
 
     var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 
@@ -307,7 +326,7 @@ pub fn main() !void {
     // std.log.info("Took: {}", .{end});
 
     var i: usize = 0;
-    while (i < 10) : (i += 1) {
+    while (i < 20) : (i += 1) {
         const res = executor.cycle(inputs);
         std.log.info("{any} {any} (ov: {X})", .{ inputs, res, res.ram_out_set_value });
         inputs = updateInputs(res, ram);

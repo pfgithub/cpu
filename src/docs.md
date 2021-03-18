@@ -8,6 +8,10 @@ Format:
 
 loads the 52-bit immediate into the specified register. not sign extended.
 
+## add 0b{unused×44}{reg_c×4}{reg_b×4}{reg_a×4}_0000010_0
+
+stores `reg_c = reg_a + reg_b` and sets the overflow flag (TODO) if there is an overflow
+
 ## (root only) test: 0b00000000000000000000000000000000000000000000000000000000_0001000_1
 
 displays "0xFEEDC0DE" (4276992702) on the "ram_out_set_value" port, with "ram_out_set" = 0
