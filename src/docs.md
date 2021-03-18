@@ -4,6 +4,10 @@ Format:
 
 `(0|1 root only)(7 instruction id)`
 
+## li: 0b{immediate×52}{reg×4}_0000001_0
+
+loads the 52-bit immediate into the specified register. not sign extended.
+
 ## (root only) test: 0b00000000000000000000000000000000000000000000000000000000_0001000_1
 
 displays "0xFEEDC0DE" (4276992702) on the "ram_out_set_value" port, with "ram_out_set" = 0

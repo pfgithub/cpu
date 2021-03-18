@@ -13,6 +13,11 @@ type Tuple<T, N extends number> = N extends 64
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
     ]
+    : N extends 52
+    ? [
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+    ]
     : N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
 type _TupleOf<T, N extends number, R extends unknown[]> = R['length'] extends N ? R : _TupleOf<T, N, [T, ...R]>;
 
@@ -405,6 +410,17 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
                 out_set_value: builtin.constw(64, 0xFEEDC0DE.toString(2)),
             },
             registers: registers,
+        };
+    }},
+    /// LI (reg×4)(immediate×52)
+    "00000001": {eval: (args: Pins<56>) => {
+        const register_id = args.slice(0, 4) as Pins<4>;
+        const immediate = args.slice(4, 56) as Pins<52>;
+        return {
+            ...increment_instruction_ptr,
+
+            ram: no_ram,
+            registers: setRegister(registers, register_id, [...immediate, ...builtin.constw(12, "0")]),
         };
     }},
 } as const;
