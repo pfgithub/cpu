@@ -239,11 +239,11 @@ const instruction_handling_stage = builtin.state(3, "000");
 
 const current_instruction = builtin.state(64);
 
-const registers_array = new Array(16).fill(0).map(q => builtin.state(64));
+type RegisterSet = Tuple<Pins<64>, 4>;
+const registers_array = new Array(4).fill(0).map(q => builtin.state(64));
 
 const registers: RegisterSet = registers_array.map(reg => reg.value) as RegisterSet;
 
-type RegisterSet = Tuple<Pins<64>, 16>;
 
 // returns an updated set of registers with register register_id set to register_value
 function setRegister(registers: RegisterSet, register_id: Pins<4>, register_value: Pins<64>): RegisterSet {
