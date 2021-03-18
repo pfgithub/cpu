@@ -28,3 +28,9 @@ How to implement memory paging
 - Same for step 2
   - This time, the memory pager puts the actual, final address into `ram_out_addr` and sets `memory_paging_state=0`
   - Next cycle, the instruction will continue to execute as normal wherever it left off, as if nothing happened.
+- How to enable paging:
+- Rather than making it root vs user, instead
+  - Have a root-only register "memory_paging" (set with some root-only instrs)
+  - If this is set to 0, paging is disabled
+  - To call user code, make sure to set the page table first. After user code returns, unset the page table.
+  - Enable/disable page table as needed while in root.
