@@ -413,7 +413,7 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
         };
     }},
     /// LI (reg×4)(immediate×52)
-    "00000001": {eval: (args: Pins<56>) => {
+    "00000010": {eval: (args: Pins<56>) => {
         const register_id = args.slice(0, 4) as Pins<4>;
         const immediate = args.slice(4, 56) as Pins<52>;
         return {
