@@ -337,8 +337,11 @@ const instr = opaque {
     pub fn add(a: Register, b: Register, out: Register) u64 {
         return instruction(0b0000010_0, bitArray(u56, .{ a.int(), b.int(), out.int(), @as(u44, 0) }));
     }
-    pub fn load(a: Register, out: Register) u64 {
-        return instruction(0b0000011_0, bitArray(u56, .{ a.int(), out.int(), @as(u48, 0) }));
+    pub fn load(addr: Register, out: Register) u64 {
+        return instruction(0b0000011_0, bitArray(u56, .{ addr.int(), out.int(), @as(u48, 0) }));
+    }
+    pub fn store(addr: Register, value: Register) u64 {
+        return instruction(0b0000100_0, bitArray(u56, .{ addr.int(), value.int(), @as(u48, 0) }));
     }
 };
 
@@ -357,9 +360,13 @@ pub fn main() !void {
     ram[1] = instr.li(.r0, 0x79A);
     ram[2] = instr.li(.r1, 0x347A);
     ram[3] = instr.add(.r0, .r1, .r2);
-    ram[4] = instr.li(.r3, 0b1000);
+    ram[4] = instr.li(.r3, 1 << 3);
     ram[5] = instr.load(.r3, .r0);
-    ram[6] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[6] = instr.li(.r3, 9 << 3);
+    ram[7] = instr.li(.r1, @intCast(u52, instr.li(.r1, 0xC0DE0000)));
+    ram[8] = instr.store(.r3, .r1);
+    ram[9] = instr.li(.r1, 0xBAD);
+    ram[10] = instr.instruction(0b1111111_0, 0); // (halt)
 
     var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 

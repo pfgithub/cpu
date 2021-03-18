@@ -408,6 +408,14 @@ const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_h
 })();
 type NCIOutput = Omit<Output, "current_instruction">;
 const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
+    /// NOOP (unused×56)
+    "00000000": {eval: (args: Pins<56>) => {
+        return {
+            ...increment_instruction_ptr,
+
+            registers: registers,
+        };
+    }},
     /// LI (reg×4)(immediate×52)
     "00000010": {eval: (args: Pins<56>) => {
         const register_id = args.slice(0, 4) as Pins<4>;
@@ -456,6 +464,33 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
                 ...increment_instruction_ptr,
 
                 registers: setRegister(registers, out_reg, ram_in),
+            }))())
+        ;
+    }},
+    // STORE (store_addr×4)(value_reg×4)(unused×48)
+    "00001000": {eval: (args: Pins<56>): NCIOutput => {
+        // 2 steps. 1: read memory. 2: set register.
+        const store_addr_reg = getRegister(registers, args.slice(0, 4) as Pins<4>);
+        const store_value = getRegister(registers, args.slice(4, 8) as Pins<4>);
+
+        const store_addr = store_addr_reg.slice(3, 64) as Pins<61>; // first 3 bits are ignored
+        const expct_zero = store_addr_reg.slice(0, 3);
+
+        return ifChain(outputNCIBranch, outputNCIMerge)
+            // address must be 8 bit aligned
+            .when(not(ifEq(expct_zero, builtin.constw(3, "000"))), getError(builtin.constw(64, 0xB4D41167.toString(2))))
+            .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "001")), ((): NCIOutput => ({
+                instruction_ptr: instruction_ptr.value,
+                instruction_handling_stage: builtin.constw(3, "010"),
+
+                ram: setRam(store_addr, store_value),
+
+                registers: registers,
+            }))())
+            .else(((): NCIOutput => ({
+                ...increment_instruction_ptr,
+
+                registers: registers,
             }))())
         ;
     }},

@@ -4,6 +4,10 @@ Format:
 
 `(0|1 root only)(7 instruction id)`
 
+## noop: 0b{immediate×56}{reg×4}_0000000_0
+
+does nothing.
+
 ## li: 0b{immediate×52}{reg×4}_0000001_0
 
 loads the 52-bit immediate into the specified register. not sign extended.
@@ -12,15 +16,21 @@ loads the 52-bit immediate into the specified register. not sign extended.
 
 stores `reg_c = reg_a + reg_b` and sets the overflow flag (TODO) if there is an overflow
 
-## load 0b{unused×48}{reg_b×4}{reg_a×4}_0000011_0
+## load 0b{unused×48}{reg_out×4}{reg_addr×4}_0000011_0
 
 reads a 64b-aligned value from memory. `reg_b = reg_a.*`.
 
-if the value is not 8-bit aligned, an error occurs `INVALID_ALIGN`
+if the address is not 8-bit aligned, an error occurs `INVALID_ALIGN`
 
 if memory paging is enabled and `reg_a` is not an available piece of memory, the program will exit with the code `INVALID_ACCESS`
 
 note that `0` is never a valid address.
+
+## store 0b{unused×48}{reg_value×4}{reg_addr×4}__0000100_0
+
+writes a 64 bit value to the 64b-aligned memory address `reg_addr`
+
+if the address is misaligned, error. if paging is enabled and the address does not refer to a valid page, error.
 
 ## halt: 0b00000000000000000000000000000000000000000000000000000000_1111111_0
 
@@ -48,3 +58,10 @@ How to implement memory paging
   - If this is set to 0, paging is disabled
   - To call user code, make sure to set the page table first. After user code returns, unset the page table.
   - Enable/disable page table as needed while in root.
+  - note that this isn't actually possible and don't do this. the address of the current instruction is
+    stored in a (hidden) register, but it needs to use the page table and stuff.
+    having a method `set_paging «0xSOME_ADDR»` would mean that suddenly instructions
+    are executing from the wrong location, and that would be bad.
+    this could be fixed by having the location of the current instruction be absolute in
+    memory but that would make it very easy for a user program to have the instruction pointer
+    escape from mapped space if there are enough no-op instructions
