@@ -12,10 +12,6 @@ loads the 52-bit immediate into the specified register. not sign extended.
 
 stores `reg_c = reg_a + reg_b` and sets the overflow flag (TODO) if there is an overflow
 
-## (root only) test: 0b00000000000000000000000000000000000000000000000000000000_0001000_1
-
-displays "0xFEEDC0DE" (4276992702) on the "ram_out_set_value" port, with "ram_out_set" = 0
-
 ## halt: 0b00000000000000000000000000000000000000000000000000000000_1111111_0
 
 invalid instruction;

@@ -361,10 +361,8 @@ function ifChain<T>(branch: (cond: Pin, value: T) => T, merge: (a: T, b: T) => T
 // 0b111 - error, everything is wrong. don't do anything and display an error LED.
 function performInstructionFetch(): Output {
     return {
-        instruction_ptr: instruction_ptr.value,
-        instruction_handling_stage: builtin.constw(3, "001"),
-
-        ram: fetchRam(instruction_ptr.value),
+        ...increment_instruction_ptr,
+        
         registers: registers,
 
         current_instruction: builtin.constw(64, "0"),
@@ -392,27 +390,16 @@ const no_ram: RamPins = {
     out_set_value: builtin.constw(64, "0"),
 };
 
-// TODO next cycle's instruction fetch can start immediately rather than waiting 2 ticks between instructions
-const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>} => {
+const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>, ram: RamPins} => {
+    const incremented = adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum;
     return {
-        instruction_ptr: adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum,
-        instruction_handling_stage: builtin.constw(3, "000"),
+        instruction_ptr: incremented,
+        instruction_handling_stage: builtin.constw(3, "001"),
+
+        ram: fetchRam(instruction_ptr.value),
     };
 })();
 const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "current_instruction">}} = {
-    /// TEST (…unused×56) → print 0xFEEDC0DE to the ram_out_set_value port, then continue to the next instruction normally
-    "00010001": {eval: () => {
-        return {
-            ...increment_instruction_ptr,
-
-            ram: {
-                out_addr: builtin.constw(61, "0"),
-                out_set: builtin.constw(1, "0"),
-                out_set_value: builtin.constw(64, 0xFEEDC0DE.toString(2)),
-            },
-            registers: registers,
-        };
-    }},
     /// LI (reg×4)(immediate×52)
     "00000010": {eval: (args: Pins<56>) => {
         const register_id = args.slice(0, 4) as Pins<4>;
@@ -420,7 +407,6 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
         return {
             ...increment_instruction_ptr,
 
-            ram: no_ram,
             registers: setRegister(registers, register_id, [...immediate, ...builtin.constw(12, "0")]),
         };
     }},
@@ -434,7 +420,6 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => Omit<Output, "cur
         return {
             ...increment_instruction_ptr,
 
-            ram: no_ram,
             registers: setRegister(registers, reg_out, add_res.sum),
             // TODO set overflow flag on overflow
         };
