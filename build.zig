@@ -5,12 +5,12 @@ pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
 
     {
-        const exe = b.addExecutable("cpu", "src/main.zig");
+        const exe = b.addExecutable("cpu", "src/logic_emulator.zig");
         exe.setTarget(target);
         exe.setBuildMode(mode);
         {
             const pkgfile = "zig-cache/logic.zig";
-            const sh_cmd = "./deno run -q src/sample6.ts > " ++ pkgfile;
+            const sh_cmd = "./deno run -q src/cpu_logic.ts > " ++ pkgfile;
             const runner = b.addSystemCommand(&[_][]const u8{ "sh", "-c", sh_cmd });
             exe.step.dependOn(&runner.step);
             exe.addPackagePath("logic", pkgfile);

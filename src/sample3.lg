@@ -1,7 +1,0 @@
-(@store timer setTimer)
-
-(@pin demo)
-(@link (demo) (timer))
-(@link (setTimer) (@nor timer))
-
-(@store inbits setInbits)
