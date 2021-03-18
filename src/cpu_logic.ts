@@ -240,8 +240,8 @@ const instruction_handling_stage = builtin.state(3, "000");
 
 const current_instruction = builtin.state(64);
 
-type RegisterSet = Tuple<Pins<64>, 4>;
-const registers_array = new Array(4).fill(0).map(q => builtin.state(64));
+type RegisterSet = Tuple<Pins<64>, 16>;
+const registers_array = new Array(16).fill(0).map(q => builtin.state(64));
 
 const registers: RegisterSet = registers_array.map(reg => reg.value) as RegisterSet;
 
