@@ -411,12 +411,18 @@ pub fn main() !void {
     defer std.testing.expect(!gpa.deinit());
     const alloc = &gpa.allocator;
 
+    var timer = try std.time.Timer.start();
+    timer.reset();
+
     var executor = try LogicExecutor.init(alloc, logic_text.text);
     defer executor.deinit();
 
+    std.log.info("Executor executed in: {}", .{timer.read()});
+    timer.reset();
+
     var ram = try alloc.alloc(u64, 1000000); // 1mb
     defer alloc.free(ram);
-    for (ram) |*it| it.* = 0xAAAAAAAA;
+    for (ram) |*it| it.* = 0xAAAAAAAAAAAAAAAA;
     ram[0x0] = undefined; // ram[0] is invalid and doesn't exist
     ram[0x1] = instr.li(.r0, 0x79A);
     ram[0x2] = instr.li(.r1, 0x347A);
@@ -437,15 +443,15 @@ pub fn main() !void {
     ram[0x11] = instr.add(.r5, .pc, .r3);
     ram[0x12] = instr.instruction(0b1111111_0, 0); // (halt)
 
+    std.log.info("Ram initialized in: {}", .{timer.read()});
+
     var inputs = updateInputs(OutputStruct{
         .ram_out_addr = 0,
         .ram_out_set = 0,
         .ram_out_set_value = 0,
     }, ram);
 
-    // const timer = try std.time.Timer.start();
-    // const end = timer.read();
-    // std.log.info("Took: {}", .{end});
+    timer.reset();
 
     var i: usize = 0;
     while (i < 30) : (i += 1) {
@@ -453,4 +459,6 @@ pub fn main() !void {
         std.log.info("{X}: r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ res.pc, @bitCast(i64, res.r0), @bitCast(i64, res.r1), res.r2, res.r3, res.ram_out_set_value });
         inputs = updateInputs(res, ram);
     }
+
+    std.log.info("Took: {}", .{timer.read()});
 }
