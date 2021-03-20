@@ -245,8 +245,8 @@ const instruction_handling_stage = builtin.state(3, "000");
 
 const current_instruction = builtin.state(64);
 
-type RegisterSet = Tuple<Pins<64>, 16>;
-const registers_array = new Array(16).fill(0).map(q => builtin.state(64));
+type RegisterSet = Tuple<Pins<64>, 15>;
+const registers_array = new Array(15).fill(0).map(q => builtin.state(64));
 
 const registers: RegisterSet = registers_array.map(reg => reg.value) as RegisterSet;
 
@@ -259,6 +259,7 @@ const registers: RegisterSet = registers_array.map(reg => reg.value) as Register
 
 // returns an updated set of registers with register register_id set to register_value
 function setRegister(registers: RegisterSet, register_id: Pins<4>, register_value: Pins<64>): RegisterSet {
+    // writing to .pc voids the value rather than erroring
     return registers.map((value, i): Pins<64> => {
         const condition = ifEq(register_id, builtin.constw(4, i.toString(2)));
         return orMany(
@@ -273,6 +274,8 @@ function getRegister(registers: RegisterSet, register_id: Pins<4>): Pins<64> {
     registers.forEach((register_value, i) => {
         res = orMany(res, ifTrue(ifEq(register_id, builtin.constw(4, i.toString(2))), register_value));
     });
+    const pc_value: Pins<64> = [...builtin.constw(3, "0"), ...instruction_ptr.value];
+    res = orMany(res, ifTrue(ifEq(register_id, builtin.constw(4, "1111")), pc_value));
     return res;
 }
 // set two registers: eg

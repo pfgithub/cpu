@@ -62,7 +62,7 @@ const OutputStruct = struct {
     rC: u64 = 0,
     rD: u64 = 0,
     rE: u64 = 0,
-    rF: u64 = 0,
+    pc: u64 = 0,
 };
 const OutputType = EnumFromStruct(OutputStruct);
 
@@ -322,7 +322,7 @@ fn bitArray(comptime Rest: type, bits: anytype) Rest {
 // zig fmt: off
 const instr = opaque {
     const Register = enum(u4) {
-        r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, rA, rB, rC, rD, rE, rF,
+        r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, rA, rB, rC, rD, rE, pc,
 // zig fmt: on
         pub fn int(reg: Register) u4 {
             return @enumToInt(reg);
@@ -382,7 +382,9 @@ pub fn main() !void {
     ram[14] = instr.li(.r0, 0x12);
     ram[15] = instr.li(.r1, -0x83);
     ram[16] = instr.add(.r0, .r1, .r0);
-    ram[17] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[15] = instr.li(.r5, 0);
+    ram[17] = instr.add(.r5, .pc, .r3);
+    ram[18] = instr.instruction(0b1111111_0, 0); // (halt)
 
     var inputs = updateInputs(OutputStruct{
         .ram_out_addr = 0,
@@ -395,7 +397,7 @@ pub fn main() !void {
     // std.log.info("Took: {}", .{end});
 
     var i: usize = 0;
-    while (i < 20) : (i += 1) {
+    while (i < 30) : (i += 1) {
         const res = executor.cycle(inputs);
         std.log.info("r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ @bitCast(i64, res.r0), @bitCast(i64, res.r1), res.r2, res.r3, res.ram_out_set_value });
         inputs = updateInputs(res, ram);

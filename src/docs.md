@@ -1,3 +1,10 @@
+# Registers
+
+r0…rE : 64 bit readable+writable regsiters
+
+pc : 64 bit program counter, read-only. bottom 3 bits are always 0 because instructions are always 64b-aligned. writing to this register
+will void the written value.
+
 # Instructions
 
 Format:
