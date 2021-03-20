@@ -47,22 +47,22 @@ const OutputStruct = struct {
     ram_out_set: u1,
     ram_out_set_value: u64,
 
-    r0: u64,
-    r1: u64,
-    r2: u64,
-    r3: u64,
-    r4: u64,
-    r5: u64,
-    r6: u64,
-    r7: u64,
-    r8: u64,
-    r9: u64,
-    rA: u64,
-    rB: u64,
-    rC: u64,
-    rD: u64,
-    rE: u64,
-    rF: u64,
+    r0: u64 = 0,
+    r1: u64 = 0,
+    r2: u64 = 0,
+    r3: u64 = 0,
+    r4: u64 = 0,
+    r5: u64 = 0,
+    r6: u64 = 0,
+    r7: u64 = 0,
+    r8: u64 = 0,
+    r9: u64 = 0,
+    rA: u64 = 0,
+    rB: u64 = 0,
+    rC: u64 = 0,
+    rD: u64 = 0,
+    rE: u64 = 0,
+    rF: u64 = 0,
 };
 const OutputType = EnumFromStruct(OutputStruct);
 
@@ -384,7 +384,11 @@ pub fn main() !void {
     ram[16] = instr.add(.r0, .r1, .r0);
     ram[17] = instr.instruction(0b1111111_0, 0); // (halt)
 
-    var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
+    var inputs = updateInputs(OutputStruct{
+        .ram_out_addr = 0,
+        .ram_out_set = 0,
+        .ram_out_set_value = 0,
+    }, ram);
 
     // const timer = try std.time.Timer.start();
     // const end = timer.read();
