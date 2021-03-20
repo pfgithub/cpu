@@ -10,7 +10,8 @@ pub fn build(b: *Builder) void {
         exe.setBuildMode(mode);
         {
             const pkgfile = "zig-cache/logic.zig";
-            const sh_cmd = "node esbuild.js && node dist/out.js > " ++ pkgfile;
+            const textfile = "zig-cache/logic.txt";
+            const sh_cmd = "node esbuild.js && node dist/out.js > " ++ textfile ++ " && echo 'pub const text = @embedFile(\"logic.txt\");' > " ++ pkgfile;
             const runner = b.addSystemCommand(&[_][]const u8{ "sh", "-c", sh_cmd });
             exe.step.dependOn(&runner.step);
             exe.addPackagePath("logic", pkgfile);

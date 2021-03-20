@@ -628,36 +628,23 @@ function assertNever(a: never): never {
     throw new Error("Not never");
 }
 
-console.log(
-`pub const Pin = union(enum) {
-    in: struct { name: []const u8 },
-    out: struct { name: []const u8, dep: usize },
-
-    nor: struct { deps: [2]usize },
-    constant: struct { value: u1 },
-    state: struct { dep: usize, initial: u1 },
-};
-
-pub const pins = &[_]Pin{`
-);
 builtin.pins.forEach((pin, i) => {
     if(pin.kind === "in") {
-        console.log("    .{ .in = .{ .name = "+JSON.stringify(pin.name)+" } },");
+        console.log(`i\t${pin.name}`);
     }else if(pin.kind === "out") {
-        console.log("    .{ .out = .{ .name = "+JSON.stringify(pin.name)+", .dep = "+((pin.dep as unknown as number) - 1)+" } },");
+        console.log(`o\t${pin.name}\t${pin.dep}`);
     }else if(pin.kind === "const") {
-        console.log("    .{ .constant = .{ .value = "+pin.value+" } },");
+        console.log(`c\t${pin.value}`);
     }else if(pin.kind === "nor") {
-        console.log("    .{ .nor = .{ .deps = [_]usize{ "+pin.deps.map(dep => (dep as unknown as number) - 1).join(", ")+" } } },");
+        console.log(`n\t${pin.deps[0]}\t${pin.deps[1]}`);
     }else if(pin.kind === "state") {
         if(!pin.dep) {
             console.log("};");
             console.warn(pin.debug);
             throw new Error("Missing .set for state");
         }
-        console.log("    .{ .state = .{ .dep = "+((pin.dep as unknown as number) - 1)+", .initial = "+pin.initial+" } },");
+        console.log(`s\t${pin.dep}\t${pin.initial}`);
     }else assertNever(pin);
 });
-console.log("};");
 
 // simulate(builtin.pins);

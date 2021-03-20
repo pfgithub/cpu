@@ -1,5 +1,5 @@
 const std = @import("std");
-const logic = @import("logic");
+const logic_text = @import("logic");
 
 fn IndexedSlice(comptime T: type, comptime Index: type) type {
     return struct {
@@ -107,6 +107,68 @@ const OutputArray = struct {
     }
 };
 
+const PinsParser = struct {
+    pub const Pin = union(enum) {
+        in: struct { name: []const u8 },
+        out: struct { name: []const u8, dep: usize },
+
+        nor: struct { deps: [2]usize },
+        constant: struct { value: u1 },
+        state: struct { dep: usize, initial: u1 },
+    };
+
+    text: []const u8,
+
+    pub fn from(text: []const u8) PinsParser {
+        return PinsParser{ .text = text };
+    }
+
+    pub fn next(parser: *PinsParser) ?Pin {
+        const line = parser.takeLine() orelse return null;
+        var split = std.mem.split(line, "\t");
+        defer std.testing.expectEqual(split.next(), null); // error means extra values
+        const id = split.next() orelse unreachable; // error means logic.txt is bad.
+        std.testing.expectEqual(id.len, 1);
+        return switch (id[0]) {
+            'i' => Pin{
+                .in = .{ .name = split.next() orelse unreachable },
+            },
+            'o' => Pin{
+                .out = .{
+                    .name = split.next() orelse unreachable,
+                    .dep = (std.fmt.parseInt(usize, split.next() orelse unreachable, 10) catch unreachable) - 1,
+                },
+            },
+            'c' => Pin{
+                .constant = .{ .value = std.fmt.parseInt(u1, split.next() orelse unreachable, 2) catch unreachable },
+            },
+            'n' => Pin{
+                .nor = .{
+                    .deps = [_]usize{
+                        (std.fmt.parseInt(usize, split.next() orelse unreachable, 10) catch unreachable) - 1,
+                        (std.fmt.parseInt(usize, split.next() orelse unreachable, 10) catch unreachable) - 1,
+                    },
+                },
+            },
+            's' => Pin{
+                .state = .{
+                    .dep = (std.fmt.parseInt(usize, split.next() orelse unreachable, 10) catch unreachable) - 1,
+                    .initial = std.fmt.parseInt(u1, split.next() orelse unreachable, 10) catch unreachable,
+                },
+            },
+            else => unreachable, // bad id
+        };
+    }
+    pub fn takeLine(parser: *PinsParser) ?[]const u8 {
+        if (parser.text.len == 0) return null;
+        const index = std.mem.indexOf(u8, parser.text, "\n") orelse parser.text.len;
+
+        const until_newline = parser.text[0..index];
+        parser.text = std.mem.trimLeft(u8, parser.text[index..], "\r\n");
+        return std.mem.trimRight(u8, until_newline, "\r"); // I'm not sure if windows puts \r but just in case
+    }
+};
+
 const LogicExecutor = struct {
     const ExecutionPin = union(enum) {
         nor: struct { deps: [2]PinIndex },
@@ -135,26 +197,14 @@ const LogicExecutor = struct {
     outputs: []Output,
     alloc: *std.mem.Allocator,
 
-    pub fn init(alloc: *std.mem.Allocator, pins: []const logic.Pin) !LogicExecutor {
+    pub fn init(alloc: *std.mem.Allocator, pins: []const u8) !LogicExecutor {
         var execution_pins = try alloc.alloc(ExecutionPin, pins.len);
         errdefer alloc.free(execution_pins);
 
-        var states_al = try std.ArrayList(State).initCapacity(alloc, len: {
-            var len: usize = 0;
-            for (pins) |pin| if (pin == .state) {
-                len += 1;
-            };
-            break :len len;
-        });
+        var states_al = std.ArrayList(State).init(alloc);
         errdefer states_al.deinit();
 
-        var outputs_al = try std.ArrayList(Output).initCapacity(alloc, len: {
-            var len: usize = 0;
-            for (pins) |pin| if (pin == .out) {
-                len += 1;
-            };
-            break :len len;
-        });
+        var outputs_al = std.ArrayList(Output).init(alloc);
         errdefer outputs_al.deinit();
 
         var input_kind_seen_count = std.AutoHashMap(InputType, IOShiftSize).init(alloc);
@@ -166,14 +216,16 @@ const LogicExecutor = struct {
         var logic_cache = try alloc.alloc(u2, pins.len);
         errdefer alloc.free(logic_cache);
 
-        for (pins) |pin, i| {
+        var i: usize = 0;
+        var pins_iter = PinsParser.from(pins);
+        while (pins_iter.next()) |pin| : (i += 1) {
             execution_pins[i] = switch (pin) {
                 .nor => |nor| .{ .nor = .{ .deps = [_]PinIndex{ @intToEnum(PinIndex, nor.deps[0]), @intToEnum(PinIndex, nor.deps[1]) } } },
                 .constant => |constant| .{ .constant = .{ .value = constant.value } },
                 .state => |state| blk: {
                     const state_v = State{ .value = state.initial, .next_value = undefined, .dep = @intToEnum(PinIndex, state.dep) };
                     const index = @intToEnum(StateIndex, states_al.items.len);
-                    states_al.appendAssumeCapacity(state_v);
+                    try states_al.append(state_v);
                     break :blk .{ .state = .{ .state_id = index } };
                 },
                 .in => |in| blk: {
@@ -205,7 +257,7 @@ const LogicExecutor = struct {
                         v.entry.value += 1;
                     }
                     const index = outputs_al.items.len;
-                    outputs_al.appendAssumeCapacity(Output{
+                    try outputs_al.append(Output{
                         .output_type = output_type,
                         .output_index = v.entry.value,
                         .dep = @intToEnum(PinIndex, out.dep),
@@ -359,7 +411,7 @@ pub fn main() !void {
     defer std.testing.expect(!gpa.deinit());
     const alloc = &gpa.allocator;
 
-    var executor = try LogicExecutor.init(alloc, logic.pins);
+    var executor = try LogicExecutor.init(alloc, logic_text.text);
     defer executor.deinit();
 
     var ram = try alloc.alloc(u64, 1000000); // 1mb
