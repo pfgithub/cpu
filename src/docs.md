@@ -8,9 +8,9 @@ Format:
 
 does nothing.
 
-## li: 0b{immediate×52}{reg×4}_0000001_0
+## li: 0b{sign×1}{immediate×51}{reg×4}_0000001_0
 
-loads the 52-bit immediate into the specified register. not sign extended.
+loads the 51-bit immediate into the specified register, sign extended with the sign bit.
 
 ## add 0b{unused×44}{reg_c×4}{reg_b×4}{reg_a×4}_0000010_0
 

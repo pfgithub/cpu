@@ -18,6 +18,11 @@ type Tuple<T, N extends number> = N extends 64
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
     ]
+    : N extends 51
+    ? [
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+    ]
     : N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
 type _TupleOf<T, N extends number, R extends unknown[]> = R['length'] extends N ? R : _TupleOf<T, N, [T, ...R]>;
 
@@ -411,6 +416,9 @@ function jumpToAddr(addr: Pins<61>): {instruction_ptr: Pins<61>, instruction_han
         ram: fetchRam(addr),
     };
 }
+function repeat<W extends number, T>(w: W, v: (i: number) => T): Tuple<T, W> {
+    return new Array(w).fill(0).map((_, i) => v(i)) as Tuple<T, W>;
+}
 const increment_instruction_ptr = ((): {instruction_ptr: Pins<61>, instruction_handling_stage: Pins<3>, ram: RamPins} => {
     const incremented = adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1)).sum;
     return jumpToAddr(incremented);
@@ -427,12 +435,14 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
     }},
     /// LI (reg×4)(immediate×52)
     "00000010": {eval: (args: Pins<56>) => {
+        // a function could be made [bit, rest] = take(args, 4)
         const register_id = args.slice(0, 4) as Pins<4>;
-        const immediate = args.slice(4, 56) as Pins<52>;
+        const sign_extend = args.slice(55, 56) as Pins<1>;
+        const immediate = args.slice(4, 55) as Pins<51>;
         return {
             ...increment_instruction_ptr,
 
-            registers: setRegister(registers, register_id, [...immediate, ...builtin.constw(12, "0")]),
+            registers: setRegister(registers, register_id, [...immediate, ...repeat(13, () => sign_extend[0])]),
         };
     }},
     /// ADD (reg×4)(reg×4)(reg×4)(unused×44)

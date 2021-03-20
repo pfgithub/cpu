@@ -66,7 +66,7 @@ const OutputStruct = struct {
 };
 const OutputType = EnumFromStruct(OutputStruct);
 
-const IOSize = u128;
+const IOSize = u64;
 const IOShiftSize = std.math.Log2Int(IOSize);
 
 const InputArray = struct {
@@ -83,13 +83,13 @@ const InputArray = struct {
             },
         };
     }
-    pub fn get(iarr: InputArray, field: InputType, index: u7) u1 {
+    pub fn get(iarr: InputArray, field: InputType, index: IOShiftSize) u1 {
         return @intCast(u1, (iarr.values[@enumToInt(field)] >> index) & 0b1);
     }
 };
 const OutputArray = struct {
     values: [@typeInfo(OutputType).Enum.fields.len]IOSize = [_]IOSize{0} ** @typeInfo(OutputType).Enum.fields.len,
-    pub fn set(oarr: *OutputArray, field: OutputType, index: u7, value: u1) void {
+    pub fn set(oarr: *OutputArray, field: OutputType, index: IOShiftSize, value: u1) void {
         oarr.values[@enumToInt(field)] |= @as(IOSize, value) << index;
     }
     pub fn get(oarr: OutputArray, field: OutputType) IOSize {
@@ -112,7 +112,7 @@ const LogicExecutor = struct {
         nor: struct { deps: [2]PinIndex },
         constant: struct { value: u1 },
         state: struct { state_id: StateIndex },
-        input: struct { input_type: InputType, input_index: u7 },
+        input: struct { input_type: InputType, input_index: IOShiftSize },
         output: struct { output_id: usize },
     };
     const State = struct {
@@ -122,7 +122,7 @@ const LogicExecutor = struct {
     };
     const Output = struct {
         output_type: OutputType,
-        output_index: u7,
+        output_index: IOShiftSize,
         dep: PinIndex,
         value: u1,
     };
@@ -157,10 +157,10 @@ const LogicExecutor = struct {
         });
         errdefer outputs_al.deinit();
 
-        var input_kind_seen_count = std.AutoHashMap(InputType, u7).init(alloc);
+        var input_kind_seen_count = std.AutoHashMap(InputType, IOShiftSize).init(alloc);
         defer input_kind_seen_count.deinit();
 
-        var output_kind_seen_count = std.AutoHashMap(OutputType, u7).init(alloc);
+        var output_kind_seen_count = std.AutoHashMap(OutputType, IOShiftSize).init(alloc);
         defer output_kind_seen_count.deinit();
 
         var logic_cache = try alloc.alloc(u2, pins.len);
@@ -183,8 +183,8 @@ const LogicExecutor = struct {
                     };
                     const v = try input_kind_seen_count.getOrPut(input_type);
                     if (!v.found_existing) v.entry.value = 0 else {
-                        if (v.entry.value == std.math.maxInt(u7)) {
-                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(u7), input_type });
+                        if (v.entry.value == std.math.maxInt(IOShiftSize)) {
+                            std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(IOShiftSize), input_type });
                             @panic("crash");
                         }
                         v.entry.value += 1;
@@ -198,8 +198,8 @@ const LogicExecutor = struct {
                     };
                     const v = try output_kind_seen_count.getOrPut(output_type);
                     if (!v.found_existing) v.entry.value = 0 else {
-                        if (v.entry.value == std.math.maxInt(u7)) {
-                            std.log.emerg("More than {} outputs named {}", .{ std.math.maxInt(u7), output_type });
+                        if (v.entry.value == std.math.maxInt(IOShiftSize)) {
+                            std.log.emerg("More than {} outputs named {}", .{ std.math.maxInt(IOShiftSize), output_type });
                             @panic("crash");
                         }
                         v.entry.value += 1;
@@ -331,8 +331,8 @@ const instr = opaque {
     pub fn instruction(id: u8, args: u56) u64 {
         return bitArray(u64, .{ id, args });
     }
-    pub fn li(reg: Register, immediate: u52) u64 {
-        return instruction(0b0000001_0, bitArray(u56, .{ reg.int(), immediate }));
+    pub fn li(reg: Register, immediate: i52) u64 {
+        return instruction(0b0000001_0, bitArray(u56, .{ reg.int(), @bitCast(u52, immediate) }));
     }
     pub fn add(a: Register, b: Register, out: Register) u64 {
         return instruction(0b0000010_0, bitArray(u56, .{ a.int(), b.int(), out.int(), @as(u44, 0) }));
@@ -372,14 +372,17 @@ pub fn main() !void {
     ram[4] = instr.li(.r3, 1 << 3);
     ram[5] = instr.load(.r3, .r0);
     ram[6] = instr.li(.r3, 9 << 3); // li .r3 &replace_this_instr
-    ram[7] = instr.li(.r1, @intCast(u52, instr.li(.r1, 0xC0DE0000)));
+    ram[7] = instr.li(.r1, @intCast(u51, instr.li(.r1, 0xC0DE0000)));
     ram[8] = instr.store(.r3, .r1);
     ram[9] = instr.li(.r1, 0xBAD); // replace_this_instr←
     ram[10] = instr.li(.r0, 13 << 3); // li .r7 &jmp_res
     ram[11] = instr.jmp(.r0);
     ram[12] = instr.instruction(0b1111111_0, 0); // (halt)
     ram[13] = instr.li(.r2, 0x11C0DE55); // jmp_res←
-    ram[14] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[14] = instr.li(.r0, 0x12);
+    ram[15] = instr.li(.r1, -0x83);
+    ram[16] = instr.add(.r0, .r1, .r0);
+    ram[17] = instr.instruction(0b1111111_0, 0); // (halt)
 
     var inputs = updateInputs((OutputArray{}).pack(), ram); // outputs start zero-initialized I guess
 
@@ -390,7 +393,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < 20) : (i += 1) {
         const res = executor.cycle(inputs);
-        std.log.info("r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ res.r0, res.r1, res.r2, res.r3, res.ram_out_set_value });
+        std.log.info("r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ @bitCast(i64, res.r0), @bitCast(i64, res.r1), res.r2, res.r3, res.ram_out_set_value });
         inputs = updateInputs(res, ram);
     }
 }
