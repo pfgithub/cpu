@@ -346,6 +346,12 @@ const instr = opaque {
     pub fn jmp(res: Register) u64 {
         return instruction(0b0000101_0, bitArray(u56, .{ res.int(), @as(u52, 0) }));
     }
+    // pub fn eqljmp(a: Register, b: Register, res: Register) u64 {
+    //     return instruction(0b0000110_0, bitArray(u56, .{ a.int(), b.int(), res.int(), @as(u44, 0) }));
+    // }
+
+    // what do I need:
+    // a jump and link instruction (jumps 🙲 sets the return address register to (instr)+1)
 };
 
 pub fn main() !void {
