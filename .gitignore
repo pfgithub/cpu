@@ -1,2 +1,4 @@
 zig-cache/
 deno
+node_modules/
+dist/

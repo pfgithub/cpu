@@ -2,9 +2,10 @@ a 64-bit cpu written in the typescript hardware description language
 
 build/run:
 
-- download a deno binary for your os from [here](https://github.com/denoland/deno/releases) and put it in the root folder (next to `README.md`)
+- install node and the yarn package manager.
+- `yarn install`
 - download a latest master zig binary from [here](https://ziglang.org/download/) (being developed on `0.8.0-dev.1342+4f11a88b9`)
-- `zig build run`
+- `zig build run` (note `node` must be in your path)
 
 status:
 

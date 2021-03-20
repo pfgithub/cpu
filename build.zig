@@ -10,7 +10,7 @@ pub fn build(b: *Builder) void {
         exe.setBuildMode(mode);
         {
             const pkgfile = "zig-cache/logic.zig";
-            const sh_cmd = "./deno run -q src/cpu_logic.ts > " ++ pkgfile;
+            const sh_cmd = "node esbuild.js && node dist/out.js > " ++ pkgfile;
             const runner = b.addSystemCommand(&[_][]const u8{ "sh", "-c", sh_cmd });
             exe.step.dependOn(&runner.step);
             exe.addPackagePath("logic", pkgfile);

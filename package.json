@@ -1,0 +1,11 @@
+{
+  "name": "logicgame",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "https://github.com/pfgithub/cpu.git",
+  "author": "pfg <pfg@pfg.pw>",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.9.5"
+  }
+}
