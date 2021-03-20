@@ -39,9 +39,14 @@ writes a 64 bit value to the 64b-aligned memory address `reg_addr`
 
 if the address is misaligned, error. if paging is enabled and the address does not refer to a valid page, error.
 
-## jmp 0b{unused×52}{reg_addr×4}__0000101_0
+## jal 0b{sign×1}{immediate×47}{return_reg×4}{reg_addr×4}__0000101_0
 
-rather than continuing at the next instruction, continues at (reg_addr)
+rather than continuing at the next instruction, continues at (reg_addr + signed_immediate). also, the address of the next instruction is stored
+into return_reg.
+
+note that the immediate value is starting from the 3rd bit. a value of `0b010` is actually 0x10 rather than 0x2 as you might expect.
+
+for relative jumps, use .pc as the register.
 
 ## halt: 0b00000000000000000000000000000000000000000000000000000000_1111111_0
 

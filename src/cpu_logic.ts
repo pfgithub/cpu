@@ -23,6 +23,11 @@ type Tuple<T, N extends number> = N extends 64
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
         T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
     ]
+    : N extends 47
+    ? [
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+        T, T, T, T, T, T, T, T, T, T, T, T, T, T, T,
+    ]
     : N extends N ? number extends N ? T[] : _TupleOf<T, N, []> : never;
 type _TupleOf<T, N extends number, R extends unknown[]> = R['length'] extends N ? R : _TupleOf<T, N, [T, ...R]>;
 
@@ -516,20 +521,32 @@ const instructions: {[key: string]: {eval: (args: Pins<56>) => NCIOutput}} = {
             })
         ;
     }},
-    /// JMP (reg×4)(unused×52)
+    /// jal (reg×4)(ret_reg×4)(offset×47)(sign×1)
     "00001010": {eval: (args: Pins<56>) => {
         const register_id = args.slice(0, 4) as Pins<4>;
         const register_value = getRegister(registers, register_id);
 
-        const jmp_addr = register_value.slice(3, 64) as Pins<61>;
+        const ret_reg_id = args.slice(4, 8) as Pins<4>;
+        const offset = args.slice(8, 55) as Pins<47>;
+        const offset_sign = args.slice(55, 56) as Pins<1>;
+
+        const jmp_addr_base = register_value.slice(3, 64) as Pins<61>;
         const expct_zero = register_value.slice(0, 3) as Pins<3>;
+
+        const offset_value: Pins<61> = [...offset, ...repeat(14, () => offset_sign[0])];
+        const jmp_addr = adder(61, jmp_addr_base, offset_value, builtin.const(0));
+
+        const return_address_aligned = adder(61, instruction_ptr.value, builtin.constw(61, "0"), builtin.const(1));
+        const return_address: Pins<64> = [...builtin.constw(3, "0"), ...return_address_aligned.sum];
+        // if you're at (61_bit_max) then return_address will be set to 0 which isn't very fun but too bad
+        // don't run code at 61_bit_max.
 
         return ifChain(outputNCIBranch, outputNCIMerge)
             .when(not(ifEq(expct_zero, builtin.constw(3, "000"))), getError(builtin.constw(64, 0xB4D41167.toString(2))))
             .else({
-                ...jumpToAddr(jmp_addr),
+                ...jumpToAddr(jmp_addr.sum),
 
-                registers: registers,
+                registers: setRegister(registers, ret_reg_id, return_address),
             })
         ;
     }},
@@ -573,9 +590,6 @@ function getError(err_code: Pins<64>): Output {
     };
 }
 function performInstructionDecode(): Output {
-    // ifChain().ifEq().elseIfEq().else()
-    const fetch_res = performInstructionFetch();
-
     return ifChain<Output>(outputBranch, outputMerge)
         .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "000")), performInstructionFetch())
         .when(ifEq(instruction_handling_stage.value, builtin.constw(3, "111")), getError(ifTrue(toggler.value[0], builtin.constw(64, "1".repeat(64)))))
@@ -599,6 +613,7 @@ function performInstructionDecode(): Output {
     res.registers.forEach((reg, i) => {
         builtin.out("r"+i.toString(16).toUpperCase(), reg);
     });
+    builtin.out("pc", instruction_ptr.value);
 
     current_instruction.set(res.current_instruction);
 }

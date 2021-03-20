@@ -343,8 +343,8 @@ const instr = opaque {
     pub fn store(addr: Register, value: Register) u64 {
         return instruction(0b0000100_0, bitArray(u56, .{ addr.int(), value.int(), @as(u48, 0) }));
     }
-    pub fn jmp(res: Register) u64 {
-        return instruction(0b0000101_0, bitArray(u56, .{ res.int(), @as(u52, 0) }));
+    pub fn jal(res: Register, offset: i48, ret_addr: Register) u64 {
+        return instruction(0b0000101_0, bitArray(u56, .{ res.int(), ret_addr.int(), @bitCast(u48, offset) }));
     }
     // pub fn eqljmp(a: Register, b: Register, res: Register) u64 {
     //     return instruction(0b0000110_0, bitArray(u56, .{ a.int(), b.int(), res.int(), @as(u44, 0) }));
@@ -365,26 +365,25 @@ pub fn main() !void {
     var ram = try alloc.alloc(u64, 1000000); // 1mb
     defer alloc.free(ram);
     for (ram) |*it| it.* = 0xAAAAAAAA;
-    ram[0] = undefined; // ram[0] is invalid and doesn't exist
-    ram[1] = instr.li(.r0, 0x79A);
-    ram[2] = instr.li(.r1, 0x347A);
-    ram[3] = instr.add(.r0, .r1, .r2);
-    ram[4] = instr.li(.r3, 1 << 3);
-    ram[5] = instr.load(.r3, .r0);
-    ram[6] = instr.li(.r3, 9 << 3); // li .r3 &replace_this_instr
-    ram[7] = instr.li(.r1, @intCast(u51, instr.li(.r1, 0xC0DE0000)));
-    ram[8] = instr.store(.r3, .r1);
-    ram[9] = instr.li(.r1, 0xBAD); // replace_this_instr←
-    ram[10] = instr.li(.r0, 13 << 3); // li .r7 &jmp_res
-    ram[11] = instr.jmp(.r0);
-    ram[12] = instr.instruction(0b1111111_0, 0); // (halt)
-    ram[13] = instr.li(.r2, 0x11C0DE55); // jmp_res←
-    ram[14] = instr.li(.r0, 0x12);
-    ram[15] = instr.li(.r1, -0x83);
-    ram[16] = instr.add(.r0, .r1, .r0);
-    ram[15] = instr.li(.r5, 0);
-    ram[17] = instr.add(.r5, .pc, .r3);
-    ram[18] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[0x0] = undefined; // ram[0] is invalid and doesn't exist
+    ram[0x1] = instr.li(.r0, 0x79A);
+    ram[0x2] = instr.li(.r1, 0x347A);
+    ram[0x3] = instr.add(.r0, .r1, .r2);
+    ram[0x4] = instr.li(.r3, 1 << 3);
+    ram[0x5] = instr.load(.r3, .r0);
+    ram[0x6] = instr.li(.r3, 9 << 3); // li .r3 &replace_this_instr
+    ram[0x7] = instr.li(.r1, @intCast(u51, instr.li(.r1, 0xC0DE0000)));
+    ram[0x8] = instr.store(.r3, .r1);
+    ram[0x9] = instr.li(.r1, 0xBAD); // replace_this_instr←
+    ram[0xA] = instr.jal(.pc, 2, .r3); // jal pc+2 (&jmp_res)
+    ram[0xB] = instr.instruction(0b1111111_0, 0); // (halt)
+    ram[0xC] = instr.li(.r2, 0x11C0DE55); // jmp_res←
+    ram[0xD] = instr.li(.r0, 0x12);
+    ram[0xE] = instr.li(.r1, -0x83);
+    ram[0xF] = instr.add(.r0, .r1, .r0);
+    ram[0x10] = instr.li(.r5, 0);
+    ram[0x11] = instr.add(.r5, .pc, .r3);
+    ram[0x12] = instr.instruction(0b1111111_0, 0); // (halt)
 
     var inputs = updateInputs(OutputStruct{
         .ram_out_addr = 0,
@@ -399,7 +398,7 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < 30) : (i += 1) {
         const res = executor.cycle(inputs);
-        std.log.info("r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ @bitCast(i64, res.r0), @bitCast(i64, res.r1), res.r2, res.r3, res.ram_out_set_value });
+        std.log.info("{X}: r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ res.pc, @bitCast(i64, res.r0), @bitCast(i64, res.r1), res.r2, res.r3, res.ram_out_set_value });
         inputs = updateInputs(res, ram);
     }
 }
