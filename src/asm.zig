@@ -371,13 +371,14 @@ const RegAlloc = struct {
     src: Src,
 };
 
+const ImmediateValue = struct {
+    width: std.math.Log2Int(u64),
+    value: u64,
+};
 const Arg = union(enum) {
     none: void,
     register: VariableDefinition,
-    immediate: struct {
-        width: std.math.Log2Int(u64),
-        value: u64,
-    },
+    immediate: ImmediateValue,
     out_reg: VariableDefinition,
 };
 
@@ -426,9 +427,11 @@ const Scope = struct {
 
         return scope;
     }
-    pub fn deinit(scope: *Scope) void {
+    pub fn destroy(scope: *Scope) void {
         scope.variables.deinit();
         scope.labels.deinit();
+        const alloc = scope.alloc;
+        alloc.destroy(scope);
     }
     pub fn getVariable(scope: *Scope, varname: []const u8) ?VariableDefinition {
         if (scope.variables.get(varname)) |res| return res //
@@ -475,7 +478,7 @@ fn irgenError(data: *IrgenData, src: Src, msg: []const u8) IrgenError {
 
 pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out_block: *std.ArrayList(IR_Instruction)) IrgenError!void {
     const scope = try Scope.new(parent_scope);
-    defer scope.deinit();
+    defer scope.destroy();
 
     // 1: find and predefine labels
 
@@ -647,6 +650,25 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
         },
     }
 }
+
+fn SliceIterator(comptime SliceType: type) type {
+    return struct {
+        slice: SliceType,
+        index: usize = 0,
+        const This = @This();
+        pub fn next(iter: *This) ?std.meta.Child(SliceType) {
+            if (iter.index >= iter.slice.len) return null;
+            defer iter.index += 1;
+            return iter.slice[iter.index];
+        }
+    };
+}
+
+fn sliceIterator(slice: anytype) SliceIterator(@TypeOf(slice)) {
+    const ResType = SliceIterator(@TypeOf(slice));
+    return ResType{ .slice = slice };
+}
+
 pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!void {
     // instruction: struct {
     //     name: []const u8,
@@ -688,32 +710,55 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
             // };
 
             // create an iterator over instr.args
-            const args = SliceIterator(instr.args);
+            var args = sliceIterator(instr.args);
 
-            var res_args: [InstructionMaxArgsCount]Arg = &[_]Arg{undefined} ** InstructionMaxArgsCount;
-            for (spec.args) |arg, i| {
-                res_args[i] = switch (arg) {
+            var res_args: [InstructionMaxArgsCount]Arg = [_]Arg{undefined} ** InstructionMaxArgsCount;
+            if (spec.args.len != InstructionMaxArgsCount) unreachable;
+            for (spec.args) |spec_arg, i| {
+                res_args[i] = switch (spec_arg) {
                     .constant => |cns| Arg{
                         .immediate = .{
                             .width = cns.width,
                             .value = cns.value,
                         },
                     },
-                    .reg => |reg| {
-                        // args.next() orelse {… error}
-                        todo; // irgenIntermediate()
+                    .reg => |reg| blk: {
+                        const arg = args.next() orelse {
+                            return irgenError(data, expr.src, "Not enough arguments.");
+                        };
+                        break :blk Arg{
+                            .register = try irgenIntermediate(data, scope, reg.space, arg, out_block),
+                        };
                     },
-                    .out => |out| {
-                        // args.next() orelse {… error}
-                        todo; // irgenIntermediate();
+                    .out => |out| blk: {
+                        const arg = args.next() orelse {
+                            return irgenError(data, expr.src, "Not enough arguments.");
+                        };
+                        break :blk Arg{
+                            .out_reg = try irgenIntermediate(data, scope, out.space, arg, out_block),
+                        };
                     },
-                    .immediate => |imm| {
-                        // args.next() orelse {… error}
-                        todo; // irgenImmediate
+                    .immediate => |imm| blk: {
+                        const arg = args.next() orelse {
+                            return irgenError(data, expr.src, "Not enough arguments.");
+                        };
+                        break :blk Arg{
+                            .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg, out_block),
+                        };
                     },
                 };
             }
             if (args.next()) |nxt_arg| return irgenError(data, nxt_arg.src, "Extra argument");
+
+            try out_block.append(IR_Instruction{
+                .src = expr.src,
+                .value = .{
+                    .standard_instr = .{
+                        .instr_id = spec.instr_id,
+                        .args = res_args,
+                    },
+                },
+            });
         },
         .variable => |varbl| {
             return irgenError(data, expr.src, "A register doesn't fit here.");
@@ -724,8 +769,18 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
     }
 }
 // OutWidth: std.meta.Int(…, …)
-pub fn irgenImmediate(data: *IrgenData, scope: *Scope, comptime OutWidth: type, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!OutWidth {
-    todo;
+pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u64), signed: bool, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!ImmediateValue {
+    switch (expr.value) {
+        .instruction => |instr| {
+            return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
+        },
+        .variable => |instr| {
+            return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
+        },
+        .label_ref => |lbl_ref| {
+            @panic("TODO");
+        },
+    }
 }
 
 pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void {
@@ -794,7 +849,7 @@ pub fn main() !void {
         .err = null,
     };
     var outest_scope = try Scope.newBase(alloc);
-    defer outest_scope.deinit();
+    defer outest_scope.destroy();
 
     irgen(&irgen_data, outest_scope, parsed.value.block.decls, &unallocated) catch |e| switch (e) {
         IrgenError.IrgenError => {
