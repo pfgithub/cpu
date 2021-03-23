@@ -45,6 +45,12 @@ fn isIdentChar(char: u8) bool {
         else => false,
     };
 }
+fn isIdentStartChar(char: u8) bool {
+    return switch (char) {
+        'A'...'Z', 'a'...'z' => true,
+        else => false,
+    };
+}
 fn isInstrIdentChar(char: u8) bool {
     return switch (char) {
         0...32 => false,
@@ -62,8 +68,15 @@ fn isWhitespace(char: u8) bool {
     };
 }
 fn readID(stream: *TokenStream) ?[]const u8 {
-    // TODO must start with A-Za-z
-    return readAny(stream, isIdentChar);
+    const start = stream.index;
+    if (isIdentStartChar(stream.peek())) {
+        _ = stream.take();
+    } else return null;
+    while (isIdentChar(stream.peek())) {
+        _ = stream.take();
+    }
+    const end = stream.index;
+    return stream.string[start..end];
 }
 fn readInstrID(stream: *TokenStream) ?[]const u8 {
     return readAny(stream, isInstrIdentChar);
@@ -83,6 +96,40 @@ fn eatWhitespace(stream: *TokenStream) void {
     }
 }
 
+pub fn readNumber(data: *Data) !?i64 {
+    const ts = &data.ts;
+    const start_index = ts.index;
+    errdefer ts.index = start_index;
+
+    // alternatively:
+    // if ts.peek() is '+', '-', '0'...'9' => parseInt(i64, ident, 0);
+    // switch (ts.peek) {
+    //     '+', '-', '0'...'9' => {},
+    //     else => return null,
+    // }
+
+    const signed = ts.startsWithTake("-");
+
+    if (ts.startsWithTake("0")) {
+        const radix: u8 = switch (ts.take()) {
+            'x' => 16,
+            'd' => 10,
+            'b' => 2,
+            'o' => 8,
+            else => return parseError(data, start_index, "Expected number eg 0x5 or 0d23"),
+        };
+        const number = readInstrID(ts) orelse return parseError(data, start_index, "Expected number eg 0x5 or 0d23");
+        const res = std.fmt.parseInt(i63, number, radix) catch |e| switch (e) {
+            error.Overflow => return parseError(data, start_index, "Number is too big; does not fit in an i63"),
+            error.InvalidCharacter => return parseError(data, start_index, "Number is invalid; Expected eg 0x5 or 0d23"),
+        };
+        return if (signed) -res else res;
+    } else {
+        if (signed) return parseError(data, start_index, "Expected number eg -0x5 or -0d23");
+        return null;
+    }
+}
+
 const AstExpr = struct {
     value: union(enum) {
         instruction: struct {
@@ -95,6 +142,7 @@ const AstExpr = struct {
         label_ref: struct {
             name: []const u8,
         },
+        number: i64,
     },
     src: Src,
     pub fn deinit(expr: AstExpr, alloc: *std.mem.Allocator) void {
@@ -105,6 +153,7 @@ const AstExpr = struct {
             },
             .variable => {},
             .label_ref => {},
+            .number => {},
         }
     }
     pub fn parse(alloc: *std.mem.Allocator, data: *Data) error{ ParseError, OutOfMemory }!AstExpr {
@@ -129,6 +178,14 @@ const AstExpr = struct {
             return AstExpr{
                 .src = .{ .start = start_index, .end = end_index },
                 .value = .{ .label_ref = .{ .name = id } },
+            };
+        }
+        if (try readNumber(data)) |nv| {
+            const end_index = ts.index;
+            eatWhitespace(ts);
+            return AstExpr{
+                .src = .{ .start = start_index, .end = end_index },
+                .value = .{ .number = nv },
             };
         }
 
@@ -172,7 +229,7 @@ const AstExpr = struct {
                     .value = .{ .instruction = .{ .name = instr_id, .args = res_exprs.toOwnedSlice() } },
                 };
             },
-            else => return parseError(data, after_id, "expected ident or `(instruction)`"),
+            else => return parseError(data, after_id, "expected variable, `0xNUMBER`, or `(instruction)`"),
         }
     }
 };
@@ -352,6 +409,9 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
         },
         .label_ref => |lrf| {
             try out.print(":{s}", .{lrf.name});
+        },
+        .number => |num| {
+            try out.print("{d}", .{num});
         },
     }
 }
@@ -610,7 +670,7 @@ const InstrInfo = struct {
                     .constant => |cns| cns.width,
                     .reg => 4,
                     .out => 4,
-                    .immediate => |imm| imm.width + @boolToInt(imm.signed),
+                    .immediate => |imm| imm.width,
                 });
             }
             if (bit_count != 64) @compileError("Does not add up to 64 bits.");
@@ -628,7 +688,7 @@ const InstrInfo = struct {
 
     pub const instructions = std.ComptimeStringMap(InstructionSpec, .{
         .{ "noop", instr(.noop, &[_]ArgSpec{constant(u56, 0)}) },
-        .{ "li", instr(.li, &[_]ArgSpec{ out(.normal), immediate("value", i51) }) },
+        .{ "li", instr(.li, &[_]ArgSpec{ out(.normal), immediate("value", i52) }) },
         .{ "add", instr(.add, &[_]ArgSpec{ reg("lhs", .normal), reg("rhs", .normal), out(.normal), constant(u44, 0) }) },
         .{ "load", instr(.load, &[_]ArgSpec{ reg("addr", .normal), out(.normal), constant(u48, 0) }) },
         .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }) },
@@ -731,11 +791,10 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                         };
                     },
                     .out => |out| blk: {
-                        const arg = args.next() orelse {
-                            return irgenError(data, expr.src, "Not enough arguments.");
-                        };
                         break :blk Arg{
-                            .out_reg = try irgenIntermediate(data, scope, out.space, arg, out_block),
+                            .out_reg = out_reg orelse {
+                                return irgenError(data, expr.src, "Return value is ignored");
+                            },
                         };
                     },
                     .immediate => |imm| blk: {
@@ -763,11 +822,46 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
         .variable => |varbl| {
             return irgenError(data, expr.src, "A register doesn't fit here.");
         },
-        .label_ref => |lbl_ref| {
+        .label_ref => {
+            return irgenError(data, expr.src, "An immediate value doesn't fit here.");
+        },
+        .number => {
             return irgenError(data, expr.src, "An immediate value doesn't fit here.");
         },
     }
 }
+
+fn runtimeBitcast(num: i64, width: std.math.Log2Int(u64), signed: bool) ?u64 {
+    const mask = @as(u64, std.math.maxInt(u64)) << width;
+    const num_bcd = @bitCast(u64, num);
+
+    if (signed) {
+        const sbit = @as(u64, std.math.maxInt(u64)) << (width - 1);
+        if (num_bcd & mask == 0 and num_bcd & sbit == 0) {
+            return num_bcd;
+        } else if (num_bcd & mask == mask and num_bcd & sbit == sbit) {
+            return num_bcd & ~mask;
+        } else {
+            return null;
+        }
+    } else {
+        if (mask & num_bcd == 0) return num_bcd;
+        return null;
+    }
+}
+
+test "" {
+    std.testing.expectEqual(runtimeBitcast(25, 8, false), 25);
+    std.testing.expectEqual(runtimeBitcast(-25, 8, false), null);
+    std.testing.expectEqual(runtimeBitcast(255, 8, false), 255);
+    std.testing.expectEqual(runtimeBitcast(255, 8, true), null);
+    std.testing.expectEqual(runtimeBitcast(127, 8, true), 127);
+    std.testing.expectEqual(runtimeBitcast(128, 8, true), null);
+    std.testing.expectEqual(runtimeBitcast(-128, 8, true), @bitCast(u8, @as(i8, -128)));
+    std.testing.expectEqual(runtimeBitcast(-129, 8, false), null);
+    std.testing.expectEqual(runtimeBitcast(-129, 9, true), @bitCast(u9, @as(i9, -129)));
+}
+
 // OutWidth: std.meta.Int(…, …)
 pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u64), signed: bool, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!ImmediateValue {
     switch (expr.value) {
@@ -779,6 +873,16 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u
         },
         .label_ref => |lbl_ref| {
             @panic("TODO");
+        },
+        .number => |num| {
+            // uuh uuh
+            // runtime bitcast num to `{signed ? "i" : "u"}{width}`
+            return ImmediateValue{
+                .width = width,
+                .value = runtimeBitcast(num, width, signed) orelse {
+                    return irgenError(data, expr.src, "This value doesn't fit in this slot");
+                },
+            };
         },
     }
 }
@@ -802,9 +906,9 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
     var lineText = std.mem.span(@ptrCast([*:'\n']const u8, &code[latestLine]));
 
     try out.print(
-        //{bold+brwhite}./file:{bold+brblue}{}{bold+brwhite}:{bold+brblue}{}{bold+brwhite}: {bold+red}error: {s}{reset}
-        // (b (brwhite "./file:") (brblue "{}") (brwhite ":") (brblue "{}") (brwhite ": ") (red "error: {s}"))
-        "\x1b[1m\x1b[97m./file:\x1b[1m\x1b[94m{}\x1b[1m\x1b[97m:\x1b[1m\x1b[94m{}\x1b[1m\x1b[97m: \x1b[31merror: {s}\x1b(B\x1b[m\n",
+        //{bold+brwhite}./file:{bold+brblue}{}{bold+brwhite}:{bold+brblue}{}{bold+brwhite}: {bold+red}error: {bold+white}{s}{reset}
+        // (b (brwhite "./file:") (brblue "{}") (brwhite ":") (brblue "{}") (brwhite ": ") (red "error: ") (white "{s}"))
+        "\x1b[1m\x1b[97m./file:\x1b[94m{}\x1b[97m:\x1b[94m{}\x1b[97m: \x1b[31merror: \x1b[97m{s}\x1b(B\x1b[m\n",
         .{ lyn + 1, col + 1, msg },
     );
     try out.print("{s}\n", .{lineText});

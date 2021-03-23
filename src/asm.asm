@@ -1,18 +1,18 @@
-zero = (li 0)
+zero = (li 0x0)
 {
     a = (li 0x79A)
     b = (li 0x347A)
     c = (add a b)
 }
 {
-    addr = (li (<< 0x1 0x3))
+    addr = (li 0o10)
     result = (load addr)
 }
 {
     replace_value = (li 0x0)
-    replace_addr = (add pc (li (<< 0x2 0x3)))
+    replace_addr = (add pc (li :halt_lbl))
     (store replace_addr replace_value)
-    (halt)
+    halt_lbl: (halt)
 }
 {
     (jump :skip)
