@@ -448,7 +448,6 @@ const ImmediateValue = struct {
     },
 };
 const Arg = union(enum) {
-    none: void,
     register: VariableDefinition,
     immediate: ImmediateValue,
     out_reg: VariableDefinition,
@@ -977,6 +976,86 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
     return error.Errored;
 }
 
+pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void {
+    switch (reg.value) {
+        .allocated => |acd| {
+            try out.writeAll("#");
+            try out.writeAll(std.meta.tagName(acd));
+        },
+        .unallocated => |una| {
+            try out.print("%{d}", .{una.id});
+        },
+    }
+    // value: union(enum) {
+    //     allocated: SystemRegister,
+    //     unallocated: struct {
+    //         definition_src: Src, // where the variable was defined
+    //         id: usize, // a unique id that represents this variable
+    //     },
+    // },
+    // space: RegisterSpace,
+}
+pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
+    // const Arg = union(enum) {
+    //     register: VariableDefinition,
+    //     immediate: ImmediateValue,
+    //     out_reg: VariableDefinition,
+    // };
+    switch (item) {
+        .register => |reg| {
+            try out.writeAll(" ");
+            try printIrReg(reg, out);
+        },
+        // const ImmediateValue = struct {
+        //     width: std.math.Log2Int(u64),
+        //     value: union(enum) {
+        //         constant: u64,
+        //         label: LabelDefinition, // resolves to the offset between pc and the label
+        //     },
+        // };
+        .immediate => |imm| {
+            if (imm.width == 0) return;
+            switch (imm.value) {
+                .constant => |cons| try out.print(" 0x{x}", .{cons}),
+                .label => |lbl| try out.print(" :{}", .{lbl.id}),
+            }
+        },
+        .out_reg => |oreg| {
+            try out.writeAll(" ←");
+            try printIrReg(oreg, out);
+        },
+    }
+}
+
+pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
+    // const IR_Instruction = struct {
+    //     value: union(enum) {
+    //         // normal instruction sets have a few standard instruction types
+    //         // this doesn't really so all instructions must be able to fit in here
+    //         standard_instr: struct {
+    //             instr_id: InstructionID,
+    //             args: [InstructionMaxArgsCount]Arg,
+    //         },
+    //         jump_label: LabelDefinition,
+    //         // jmp_instr
+    //     },
+    //     src: Src,
+    //     pub fn deinit(instr: IR_Instruction) void {}
+    // };
+    switch (item.value) {
+        .standard_instr => |instr| {
+            try out.print("    {s}", .{std.meta.tagName(instr.instr_id)});
+            for (instr.args) |arg| {
+                try printIrArg(arg, out);
+            }
+            try out.writeByte('\n');
+        },
+        .jump_label => |jlbl| {
+            try out.print("{d}:\n", .{jlbl.id});
+        },
+    }
+}
+
 pub fn mainMain() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
@@ -1000,8 +1079,10 @@ pub fn mainMain() !void {
 
     if (true) {
         const stdout = std.io.getStdOut().writer();
+        try stdout.writeAll("// AST:\n");
         try printAst(parsed, stdout, .{});
         try stdout.writeByte('\n');
+        try stdout.writeAll("\n");
     }
 
     // 2: transform the ast → unallocated ir
@@ -1024,6 +1105,13 @@ pub fn mainMain() !void {
         },
         IrgenError.OutOfMemory => return e,
     };
+
+    if (true) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.writeAll("// IR:\n");
+        for (unallocated.items) |item| try printIrLine(item, stdout);
+        try stdout.writeAll("\n");
+    }
 
     // 3: transform the unallocated ir → machine code
 }
