@@ -24,4 +24,5 @@ zero = (li 0x0)
     b = (li -0x83)
     c = (add a  b)
 }
+#pc = (li 0d0)
 (halt)

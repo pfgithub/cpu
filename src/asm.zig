@@ -232,6 +232,7 @@ const AstExpr = struct {
                         },
                         else => {
                             const expr = try AstExpr.parse(alloc, data);
+                            errdefer expr.deinit(alloc);
                             try res_exprs.append(expr);
                         },
                     }
@@ -247,10 +248,15 @@ const AstExpr = struct {
         }
     }
 };
+const OutVarType = union(enum) {
+    variable: []const u8,
+    reg: []const u8,
+    // maybe this should just be *AstExpr
+};
 const AstDecl = struct {
     value: union(enum) {
         exec: struct {
-            out_var: ?[]const u8,
+            out_var: ?OutVarType,
             expr: *AstExpr,
         },
         block: struct {
@@ -277,6 +283,7 @@ const AstDecl = struct {
     pub fn parse(alloc: *std.mem.Allocator, data: *Data) error{ ParseError, OutOfMemory }!AstDecl {
         // one of:
         //   name = expression
+        //   #reg = expression
         //   label:
         //   { …decl[] }
         const ts = &data.ts;
@@ -285,24 +292,29 @@ const AstDecl = struct {
         const start_index = ts.index;
         errdefer ts.index = start_index;
 
+        const swhash = ts.startsWithTake("#");
         const id_opt = readID(ts);
+        if (id_opt == null) ts.index = start_index;
+
         eatWhitespace(ts);
-        if (id_opt) |id| switch (ts.peek()) {
-            '=' => {
-                _ = ts.take();
-                eatWhitespace(ts);
-                // continue
-            },
-            ':' => {
-                _ = ts.take();
+        if (id_opt) |id| continu: {
+            // this type of stuff is what a tokenizer helps simplify
+            // this eventually will need to parse `label:`, `label:=`, `label=`, `label :=`, `label =`, but not `label :`
+            // a tokenizer could emit (lbl) (id)(:=) (id)(=) (id)(:=) (id)(=) (id)(error)
+            if (ts.startsWithTake(":")) {
                 const end_index = ts.index;
                 eatWhitespace(ts);
                 return AstDecl{
                     .src = .{ .start = start_index, .end = end_index },
                     .value = .{ .label = .{ .name = id } },
                 };
-            },
-            else => return parseError(data, ts.index, "expected `=` or `:`"),
+            }
+            eatWhitespace(ts);
+            if (ts.startsWithTake("=")) {
+                eatWhitespace(ts);
+                break :continu;
+            }
+            return parseError(data, ts.index, "expected `=` or `:`");
         } else switch (ts.peek()) {
             '{' => {
                 // block decl
@@ -332,20 +344,27 @@ const AstDecl = struct {
                     .value = .{ .block = .{ .decls = res_decls.toOwnedSlice() } },
                 };
             },
-            else => {
+            '(' => {
                 // continue
             },
+            else => return parseError(data, ts.index, "expected (instruction …args)"),
         }
 
         var slot = try alloc.create(AstExpr);
         errdefer alloc.destroy(slot);
 
         slot.* = try AstExpr.parse(alloc, data);
+        errdefer slot.deinit(alloc);
         eatWhitespace(ts);
 
         return AstDecl{
             .src = .{ .start = start_index, .end = slot.src.end },
-            .value = .{ .exec = .{ .out_var = id_opt, .expr = slot } },
+            .value = .{
+                .exec = .{
+                    .out_var = if (id_opt) |io| if (swhash) OutVarType{ .reg = io } else OutVarType{ .variable = io } else null,
+                    .expr = slot,
+                },
+            },
         };
     }
 };
@@ -402,7 +421,10 @@ pub fn printAst(ast: AstDecl, out: anytype, indent: Indent) @TypeOf(out).Error!v
             try out.print("{s}:", .{lbl.name});
         },
         .exec => |exc| {
-            if (exc.out_var) |ov| try out.print("{s} = ", .{ov});
+            if (exc.out_var) |ov| switch (ov) {
+                .variable => |vbl| try out.print("{s} = ", .{vbl}),
+                .reg => |reg| try out.print("#{s} = ", .{reg}),
+            };
             try printAstExpr(exc.expr.*, out, indent);
         },
     }
@@ -584,18 +606,28 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out
         .exec => |exec| {
             const out_var: ?VariableDefinition = blk: { // this control flow is a bit messy and confusing
                 const ovname = exec.out_var orelse break :blk null;
-                break :blk scope.getVariable(ovname) orelse {
-                    const vardef = VariableDefinition{
+                break :blk switch (ovname) {
+                    .variable => |vbl| break :blk scope.getVariable(vbl) orelse {
+                        const vardef = VariableDefinition{
+                            .value = .{
+                                .unallocated = .{
+                                    .definition_src = decl.src, // TODO exec.out_var_src?
+                                    .id = nextID(),
+                                },
+                            },
+                            .space = .normal,
+                        };
+                        try scope.defVariable(vbl, vardef);
+                        break :blk vardef;
+                    },
+                    .reg => |rg| VariableDefinition{
+                        .space = .normal,
                         .value = .{
-                            .unallocated = .{
-                                .definition_src = decl.src, // TODO exec.out_var_src?
-                                .id = nextID(),
+                            .allocated = std.meta.stringToEnum(SystemRegister, rg) orelse {
+                                return irgenError(data, decl.src, "No register with this name exists"); // TODO exec.out_var_src?
                             },
                         },
-                        .space = .normal,
-                    };
-                    try scope.defVariable(ovname, vardef);
-                    break :blk vardef;
+                    },
                 };
             };
 
@@ -726,10 +758,12 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
                 return irgenError(data, expr.src, "Variable not found");
             };
         },
-        .reg => {
+        .reg => |rg| {
             return VariableDefinition{
                 .value = .{
-                    .allocated = .pc,
+                    .allocated = std.meta.stringToEnum(SystemRegister, rg.name) orelse {
+                        return irgenError(data, expr.src, "No register with this name exists");
+                    },
                 },
                 .space = .normal,
             };
