@@ -801,7 +801,12 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
     }
     var lineText = std.mem.span(@ptrCast([*:'\n']const u8, &code[latestLine]));
 
-    try out.print("./file:{}:{}: {s}\n", .{ lyn + 1, col + 1, msg }); // todo just save this
+    try out.print(
+        //{bold+brwhite}./file:{bold+brblue}{}{bold+brwhite}:{bold+brblue}{}{bold+brwhite}: {bold+red}error: {s}{reset}
+        // (b (brwhite "./file:") (brblue "{}") (brwhite ":") (brblue "{}") (brwhite ": ") (red "error: {s}"))
+        "\x1b[1m\x1b[97m./file:\x1b[1m\x1b[94m{}\x1b[1m\x1b[97m:\x1b[1m\x1b[94m{}\x1b[1m\x1b[97m: \x1b[31merror: {s}\x1b(B\x1b[m\n",
+        .{ lyn + 1, col + 1, msg },
+    );
     try out.print("{s}\n", .{lineText});
     for (range(unicodeColumnLen(lineText[0..col]))) |_| {
         try out.writeByte(' ');
@@ -811,7 +816,7 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
     return error.Errored;
 }
 
-pub fn main() !void {
+pub fn mainMain() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
     const alloc = &gpa.allocator;
@@ -860,4 +865,12 @@ pub fn main() !void {
     };
 
     // 3: transform the unallocated ir → machine code
+}
+
+pub fn main() !u8 {
+    mainMain() catch |e| switch (e) {
+        error.Errored => return 1,
+        else => return e,
+    };
+    return 0;
 }
