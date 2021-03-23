@@ -9,7 +9,7 @@ zero = (li 0)
     result = (load addr)
 }
 {
-    replace_value = 0x0
+    replace_value = (li 0x0)
     replace_addr = (add pc (li (<< 0x2 0x3)))
     (store replace_addr replace_value)
     (halt)

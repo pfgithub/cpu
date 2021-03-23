@@ -1,24 +1,8 @@
 const std = @import("std");
 
-// ram[0x0] = undefined; // ram[0] is invalid and doesn't exist
-// ram[0x1] = instr.li(.r0, 0x79A);
-// ram[0x2] = instr.li(.r1, 0x347A);
-// ram[0x3] = instr.add(.r0, .r1, .r2);
-// ram[0x4] = instr.li(.r3, 1 << 3);
-// ram[0x5] = instr.load(.r3, .r0);
-// ram[0x6] = instr.li(.r3, 9 << 3); // li .r3 &replace_this_instr
-// ram[0x7] = instr.li(.r1, @intCast(u51, instr.li(.r1, 0xC0DE0000)));
-// ram[0x8] = instr.store(.r3, .r1);
-// ram[0x9] = instr.li(.r1, 0xBAD); // replace_this_instr←
-// ram[0xA] = instr.jal(.pc, 2, .r3); // jal pc+2 (&jmp_res)
-// ram[0xB] = instr.instruction(0b1111111_0, 0); // (halt)
-// ram[0xC] = instr.li(.r2, 0x11C0DE55); // jmp_res←
-// ram[0xD] = instr.li(.r0, 0x12);
-// ram[0xE] = instr.li(.r1, -0x83);
-// ram[0xF] = instr.add(.r0, .r1, .r0);
-// ram[0x10] = instr.li(.r5, 0);
-// ram[0x11] = instr.add(.r5, .pc, .r3);
-// ram[0x12] = instr.instruction(0b1111111_0, 0);
+// "oh I'll just make a simple assembly language with register allocation"
+// "it won't be that complicated"
+// "what do you mean you've done this once before and it was that complicated?"
 
 const sample_code = @embedFile("./asm.asm");
 
@@ -112,7 +96,7 @@ const AstExpr = struct {
             name: []const u8,
         },
     },
-    src: struct { start: usize, end: usize },
+    src: Src,
     pub fn deinit(expr: AstExpr, alloc: *std.mem.Allocator) void {
         switch (expr.value) {
             .instruction => |instr| {
@@ -205,7 +189,7 @@ const AstDecl = struct {
             name: []const u8,
         },
     },
-    src: struct { start: usize, end: usize },
+    src: Src,
     pub fn deinit(decl: AstDecl, alloc: *std.mem.Allocator) void {
         switch (decl.value) {
             .exec => |exc| {
@@ -372,45 +356,422 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
     }
 }
 
+// const IR = struct {};
+// IR needs to be able to handle jumps properly
+
+// 0b0000001_0
+
+const RegisterSpace = enum { normal };
+
+const RegAlloc = struct {
+    value: union(enum) {
+        none: void,
+        item: VariableDefinition,
+    },
+    src: Src,
+};
+
+const Arg = union(enum) {
+    none: void,
+    register: VariableDefinition,
+    immediate: struct {
+        width: std.math.Log2Int(u64),
+        value: u64,
+    },
+    out_reg: VariableDefinition,
+};
+
+const IR_Block = struct {
+    instructions: []IR_Instruction,
+};
+
+const Src = struct { start: usize, end: usize };
+
+const VariableDefinition = struct {
+    definition_src: Src, // where the variable was defined
+    id: usize, // a unique id that represents this variable
+    space: RegisterSpace, // if this register is an int register or a float register eg
+};
+const LabelDefinition = struct {
+    definition_src: Src,
+    id: usize,
+};
+
+const Scope = struct {
+    alloc: *std.mem.Allocator,
+    parent_scope: ?*Scope,
+
+    variables: std.StringHashMap(VariableDefinition),
+    labels: std.StringHashMap(LabelDefinition),
+
+    pub fn new(parent_scope: *Scope) !*Scope {
+        var res = try newBase(parent_scope.alloc);
+        errdefer res.deinit();
+
+        res.parent_scope = parent_scope;
+
+        return res;
+    }
+    pub fn newBase(alloc: *std.mem.Allocator) !*Scope {
+        var scope = try alloc.create(Scope);
+        errdefer alloc.destroy(scope);
+
+        scope.* = .{
+            .alloc = alloc,
+            .parent_scope = null,
+
+            .variables = std.StringHashMap(VariableDefinition).init(alloc),
+            .labels = std.StringHashMap(LabelDefinition).init(alloc),
+        };
+
+        return scope;
+    }
+    pub fn deinit(scope: *Scope) void {
+        scope.variables.deinit();
+        scope.labels.deinit();
+    }
+    pub fn getVariable(scope: *Scope, varname: []const u8) ?VariableDefinition {
+        if (scope.variables.get(varname)) |res| return res //
+        else if (scope.parent_scope) |parent| return parent.getVariable(varname) //
+        else return null;
+    }
+    pub fn defVariable(scope: *Scope, name: []const u8, vardef: VariableDefinition) !void {
+        try scope.variables.putNoClobber(name, vardef);
+    }
+    pub fn getLabel(scope: *Scope, labelname: []const u8) ?LabelDefinition {
+        if (scope.labels.get(labelname)) |res| return res //
+        else if (scope.parent_scope) |parent| return parent.getLabel(labelname) //
+        else return null;
+    }
+    pub fn defLabel(scope: *Scope, name: []const u8, lbldef: LabelDefinition) !void {
+        try scope.labels.putNoClobber(name, lbldef);
+    }
+};
+
+var global_id_value: usize = 0;
+fn nextID() usize {
+    defer global_id_value += 1;
+    return global_id_value;
+}
+
+const IrgenData = struct {
+    const Error = struct {
+        src: Src,
+        msg: []const u8,
+        pub fn deinit(me: Error) void {}
+    };
+    err: ?Error, // this can just be : Error = undefined // nevermind it can't
+};
+
+const IrgenError = error{ IrgenError, OutOfMemory };
+fn irgenError(data: *IrgenData, src: Src, msg: []const u8) IrgenError {
+    if (data.err) |prev_err| prev_err.deinit();
+    data.err = .{
+        .src = src,
+        .msg = msg,
+    };
+    return IrgenError.IrgenError;
+}
+
+pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out_block: *std.ArrayList(IR_Instruction)) IrgenError!void {
+    const scope = try Scope.new(parent_scope);
+    defer scope.deinit();
+
+    // 1: find and predefine labels
+
+    for (outer_block) |decl| switch (decl.value) {
+        .exec => |exec| {},
+        .block => {},
+        .label => |label| {
+            if (scope.getLabel(label.name)) |prev_label| {
+                const res = irgenError(data, decl.src, "redefinition of label. TODO note previous definition.");
+                return res;
+            }
+            try scope.defLabel(label.name, LabelDefinition{
+                .definition_src = decl.src,
+                .id = nextID(),
+            });
+        },
+    };
+
+    // 2: irgen and define variables
+    // oops these are like python variables. TODO fix, python variables are bad.
+    // cheat way to fix: `:=` vs `=` - there that's what I'll do probably because there are no keywords in this language
+
+    for (outer_block) |decl| switch (decl.value) {
+        .exec => |exec| {
+            const out_var: ?VariableDefinition = blk: { // this control flow is a bit messy and confusing
+                const ovname = exec.out_var orelse break :blk null;
+                break :blk scope.getVariable(ovname) orelse {
+                    const vardef = VariableDefinition{
+                        .definition_src = decl.src, // TODO exec.out_var_src?
+                        .id = nextID(),
+                        .space = .normal,
+                    };
+                    try scope.defVariable(ovname, vardef);
+                    break :blk vardef;
+                };
+            };
+
+            try irgenReg(data, scope, out_var, exec.expr.*, out_block);
+        },
+        .block => |block| {
+            try irgen(data, scope, block.decls, out_block);
+        },
+        .label => |lbl| {
+            const label: LabelDefinition = scope.getLabel(lbl.name) orelse unreachable;
+            try out_block.append(IR_Instruction{
+                .src = decl.src,
+                .value = .{
+                    .jump_label = label,
+                },
+            });
+        },
+    };
+}
+
+const IR_Instruction = struct {
+    value: union(enum) {
+        // normal instruction sets have a few standard instruction types
+        // this doesn't really so all instructions must be able to fit in here
+        standard_instr: struct {
+            instr_id: InstructionID,
+            args: [InstructionMaxArgsCount]Arg,
+        },
+        jump_label: LabelDefinition,
+        // jmp_instr
+    },
+    src: Src,
+    pub fn deinit(instr: IR_Instruction) void {}
+};
+
+const InstructionID = enum(u8) {
+    noop = 0b0000000_0,
+    li = 0b0000001_0,
+    add = 0b0000010_0,
+    load = 0b0000011_0,
+    store = 0b0000100_0,
+    jal = 0b0000101_0,
+    halt = 0b1111111_0,
+};
+const InstructionMaxArgsCount = 4;
+
+const InstrInfo = struct {
+    const ArgSpec = union(enum) {
+        constant: struct { width: std.math.Log2Int(u64), value: u64 },
+        reg: struct { name: []const u8, space: RegisterSpace },
+        out: struct { space: RegisterSpace },
+        immediate: struct { name: []const u8, width: std.math.Log2Int(u64), signed: bool },
+    };
+    const InstructionSpec = struct {
+        instr_id: InstructionID,
+        args: [InstructionMaxArgsCount]ArgSpec,
+    };
+    fn constant(comptime Width: type, value: Width) ArgSpec {
+        const ti: std.builtin.TypeInfo.Int = @typeInfo(Width).Int;
+        const bit_count = ti.bits + switch (ti.signedness) {
+            .unsigned => 0,
+            .signed => 1,
+        };
+        return ArgSpec{
+            .constant = .{
+                .width = bit_count,
+                .value = @bitCast(std.meta.Int(.unsigned, bit_count), value),
+            },
+        };
+    }
+    fn out(space: RegisterSpace) ArgSpec {
+        return ArgSpec{
+            .out = .{ .space = space },
+        };
+    }
+    fn immediate(name: []const u8, comptime Width: type) ArgSpec {
+        const ti: std.builtin.TypeInfo.Int = @typeInfo(Width).Int;
+        return ArgSpec{
+            .immediate = .{ .name = name, .width = std.meta.bitCount(Width), .signed = ti.signedness == .signed },
+        };
+    }
+    fn reg(name: []const u8, space: RegisterSpace) ArgSpec {
+        return ArgSpec{
+            .reg = .{ .name = name, .space = space },
+        };
+    }
+    fn instr(comptime id: InstructionID, comptime args: []const ArgSpec) InstructionSpec {
+        comptime {
+            var res_spec: []const ArgSpec = args;
+            if (res_spec.len > InstructionMaxArgsCount) @compileError("Too many spec items. Max is InstructionMaxArgsCount");
+
+            var bit_count: comptime_int = 8;
+            for (res_spec) |itm| {
+                bit_count += @as(comptime_int, switch (itm) {
+                    .constant => |cns| cns.width,
+                    .reg => 4,
+                    .out => 4,
+                    .immediate => |imm| imm.width + @boolToInt(imm.signed),
+                });
+            }
+            if (bit_count != 64) @compileError("Does not add up to 64 bits.");
+
+            while (res_spec.len < InstructionMaxArgsCount) {
+                res_spec = res_spec ++ &[_]ArgSpec{constant(u0, 0)};
+            }
+
+            return InstructionSpec{
+                .instr_id = id,
+                .args = res_spec[0..InstructionMaxArgsCount].*,
+            };
+        }
+    }
+
+    pub const instructions = std.ComptimeStringMap(InstructionSpec, .{
+        .{ "noop", instr(.noop, &[_]ArgSpec{constant(u56, 0)}) },
+        .{ "li", instr(.li, &[_]ArgSpec{ out(.normal), immediate("value", i51) }) },
+        .{ "add", instr(.add, &[_]ArgSpec{ reg("lhs", .normal), reg("rhs", .normal), out(.normal), constant(u44, 0) }) },
+        .{ "load", instr(.load, &[_]ArgSpec{ reg("addr", .normal), out(.normal), constant(u48, 0) }) },
+        .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }) },
+        .{ "halt", instr(.halt, &[_]ArgSpec{constant(u56, 0)}) },
+    });
+};
+
+pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!VariableDefinition {
+    switch (expr.value) {
+        .variable => |vbl| {
+            return scope.getVariable(vbl.name) orelse {
+                return irgenError(data, expr.src, "Variable not found");
+            };
+        },
+        else => {
+            var slot: VariableDefinition = .{ .definition_src = expr.src, .id = nextID(), .space = space };
+            try irgenReg(data, scope, slot, expr, out_block);
+            return slot;
+        },
+    }
+}
+pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!void {
+    // instruction: struct {
+    //     name: []const u8,
+    //     args: []AstExpr,
+    // },
+    // variable: struct {
+    //     name: []const u8,
+    // },
+    // label_ref: struct {
+    //     name: []const u8,
+    // },
+    switch (expr.value) {
+        .instruction => |instr| {
+            const spec: InstrInfo.InstructionSpec = InstrInfo.instructions.get(instr.name) orelse {
+                return irgenError(data, expr.src, "No instruction exists with this name"); // TODO instr.name_src?
+            };
+            // const Arg = union(enum) {
+            //     none: void,
+            //     register: VariableDefinition,
+            //     immediate: struct {
+            //         width: std.math.Log2Int(u64),
+            //         value: u64,
+            //     },
+            //     out_reg: VariableDefinition,
+            // };
+
+            // const IR_Instruction = struct {
+            //     value: union(enum) {
+            //         // normal instruction sets have a few standard instruction types
+            //         // this doesn't really so all instructions must be able to fit in here
+            //         standard_instr: struct {
+            //             instr_id: InstructionID,
+            //             args: [InstructionMaxArgsCount]Arg,
+            //         },
+            //         jump_label: LabelDefinition,
+            //         // jmp_instr
+            //     },
+            //     src: Src,
+            // };
+
+            // create an iterator over instr.args
+            const args = SliceIterator(instr.args);
+
+            var res_args: [InstructionMaxArgsCount]Arg = &[_]Arg{undefined} ** InstructionMaxArgsCount;
+            for (spec.args) |arg, i| {
+                res_args[i] = switch (arg) {
+                    .constant => |cns| Arg{
+                        .immediate = .{
+                            .width = cns.width,
+                            .value = cns.value,
+                        },
+                    },
+                    .reg => |reg| {
+                        // args.next() orelse {… error}
+                        todo; // irgenIntermediate()
+                    },
+                    .out => |out| {
+                        // args.next() orelse {… error}
+                        todo; // irgenIntermediate();
+                    },
+                    .immediate => |imm| {
+                        // args.next() orelse {… error}
+                        todo; // irgenImmediate
+                    },
+                };
+            }
+            if (args.next()) |nxt_arg| return irgenError(data, nxt_arg.src, "Extra argument");
+        },
+        .variable => |varbl| {
+            return irgenError(data, expr.src, "A register doesn't fit here.");
+        },
+        .label_ref => |lbl_ref| {
+            return irgenError(data, expr.src, "An immediate value doesn't fit here.");
+        },
+    }
+}
+// OutWidth: std.meta.Int(…, …)
+pub fn irgenImmediate(data: *IrgenData, scope: *Scope, comptime OutWidth: type, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!OutWidth {
+    todo;
+}
+
+pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void {
+    const epos = start;
+    const out = std.io.getStdErr().writer();
+
+    var lyn: usize = 0;
+    var col: usize = 0;
+    var latestLine: usize = 0;
+    for (code) |char, i| {
+        if (epos == i) break;
+        col += 1;
+        if (char == '\n') {
+            lyn += 1;
+            col = 0;
+            latestLine = i + 1;
+        }
+    }
+    var lineText = std.mem.span(@ptrCast([*:'\n']const u8, &code[latestLine]));
+
+    try out.print("./file:{}:{}: {s}\n", .{ lyn + 1, col + 1, msg }); // todo just save this
+    try out.print("{s}\n", .{lineText});
+    for (range(unicodeColumnLen(lineText[0..col]))) |_| {
+        try out.writeByte(' ');
+    }
+    try out.writeByte('^');
+    try out.writeByte('\n');
+    return error.Errored;
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
     const alloc = &gpa.allocator;
 
+    // 1: parse the file → ast
     var data = Data{
         .err = null,
-        .ts = TokenStream.from("{" ++ sample_code ++ "}"),
+        .ts = TokenStream.from("{" ++ sample_code ++ "}"), // hack for now; there is no parseTopLevel fn yet
     };
     defer if (data.err) |err| err.deinit();
 
     const parsed = AstDecl.parse(alloc, &data) catch |e| switch (e) {
         error.ParseError => {
             const err_data = data.err.?;
-            const epos = err_data.start;
-            const out = std.io.getStdErr().writer();
-
-            var lyn: usize = 0;
-            var col: usize = 0;
-            var latestLine: usize = 0;
-            for (data.ts.string) |char, i| {
-                if (epos == i) break;
-                col += 1;
-                if (char == '\n') {
-                    lyn += 1;
-                    col = 0;
-                    latestLine = i + 1;
-                }
-            }
-            var lineText = std.mem.span(@ptrCast([*:'\n']const u8, &data.ts.string[latestLine]));
-
-            try out.print("./file:{}:{}: {s}\n", .{ lyn + 1, col + 1, err_data.msg }); // todo just save this
-            try out.print("{s}\n", .{lineText});
-            for (range(unicodeColumnLen(lineText[0..col]))) |_| {
-                try out.writeByte(' ');
-            }
-            try out.writeByte('^');
-            try out.writeByte('\n');
-            return error.Errored;
+            return printReportedError(err_data.start, err_data.msg, data.ts.string);
         },
         else => return e,
     };
@@ -421,4 +782,27 @@ pub fn main() !void {
         try printAst(parsed, stdout, .{});
         try stdout.writeByte('\n');
     }
+
+    // 2: transform the ast → unallocated ir
+    var unallocated = std.ArrayList(IR_Instruction).init(alloc);
+    defer {
+        for (unallocated.items) |*una| una.deinit();
+        unallocated.deinit();
+    }
+
+    var irgen_data = IrgenData{
+        .err = null,
+    };
+    var outest_scope = try Scope.newBase(alloc);
+    defer outest_scope.deinit();
+
+    irgen(&irgen_data, outest_scope, parsed.value.block.decls, &unallocated) catch |e| switch (e) {
+        IrgenError.IrgenError => {
+            const err_data = irgen_data.err.?;
+            return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
+        },
+        IrgenError.OutOfMemory => return e,
+    };
+
+    // 3: transform the unallocated ir → machine code
 }
