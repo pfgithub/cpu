@@ -142,6 +142,9 @@ const AstExpr = struct {
         label_ref: struct {
             name: []const u8,
         },
+        reg: struct {
+            name: []const u8,
+        },
         number: i64,
     },
     src: Src,
@@ -153,6 +156,7 @@ const AstExpr = struct {
             },
             .variable => {},
             .label_ref => {},
+            .reg => {},
             .number => {},
         }
     }
@@ -178,6 +182,16 @@ const AstExpr = struct {
             return AstExpr{
                 .src = .{ .start = start_index, .end = end_index },
                 .value = .{ .label_ref = .{ .name = id } },
+            };
+        }
+        if (ts.startsWithTake("#")) {
+            const id = readID(ts) orelse return parseError(data, start_index, "expected `#reg_name`");
+            const end_index = ts.index;
+            eatWhitespace(ts);
+
+            return AstExpr{
+                .src = .{ .start = start_index, .end = end_index },
+                .value = .{ .reg = .{ .name = id } },
             };
         }
         if (try readNumber(data)) |nv| {
@@ -410,6 +424,9 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
         .label_ref => |lrf| {
             try out.print(":{s}", .{lrf.name});
         },
+        .reg => |lrf| {
+            try out.print("#{s}", .{lrf.name});
+        },
         .number => |num| {
             try out.print("{d}", .{num});
         },
@@ -423,17 +440,12 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
 
 const RegisterSpace = enum { normal };
 
-const RegAlloc = struct {
-    value: union(enum) {
-        none: void,
-        item: VariableDefinition,
-    },
-    src: Src,
-};
-
 const ImmediateValue = struct {
     width: std.math.Log2Int(u64),
-    value: u64,
+    value: union(enum) {
+        constant: u64,
+        label: LabelDefinition, // resolves to the offset between pc and the label
+    },
 };
 const Arg = union(enum) {
     none: void,
@@ -448,9 +460,17 @@ const IR_Block = struct {
 
 const Src = struct { start: usize, end: usize };
 
+const SystemRegister = enum(u4) {
+    pc = 0b1111,
+};
 const VariableDefinition = struct {
-    definition_src: Src, // where the variable was defined
-    id: usize, // a unique id that represents this variable
+    value: union(enum) {
+        allocated: SystemRegister,
+        unallocated: struct {
+            definition_src: Src, // where the variable was defined
+            id: usize, // a unique id that represents this variable
+        },
+    },
     space: RegisterSpace, // if this register is an int register or a float register eg
 };
 const LabelDefinition = struct {
@@ -567,8 +587,12 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out
                 const ovname = exec.out_var orelse break :blk null;
                 break :blk scope.getVariable(ovname) orelse {
                     const vardef = VariableDefinition{
-                        .definition_src = decl.src, // TODO exec.out_var_src?
-                        .id = nextID(),
+                        .value = .{
+                            .unallocated = .{
+                                .definition_src = decl.src, // TODO exec.out_var_src?
+                                .id = nextID(),
+                            },
+                        },
                         .space = .normal,
                     };
                     try scope.defVariable(ovname, vardef);
@@ -703,8 +727,24 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
                 return irgenError(data, expr.src, "Variable not found");
             };
         },
+        .reg => {
+            return VariableDefinition{
+                .value = .{
+                    .allocated = .pc,
+                },
+                .space = .normal,
+            };
+        },
         else => {
-            var slot: VariableDefinition = .{ .definition_src = expr.src, .id = nextID(), .space = space };
+            var slot: VariableDefinition = .{
+                .value = .{
+                    .unallocated = .{
+                        .definition_src = expr.src, // TODO exec.out_var_src?
+                        .id = nextID(),
+                    },
+                },
+                .space = space,
+            };
             try irgenReg(data, scope, slot, expr, out_block);
             return slot;
         },
@@ -779,7 +819,9 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                     .constant => |cns| Arg{
                         .immediate = .{
                             .width = cns.width,
-                            .value = cns.value,
+                            .value = .{
+                                .constant = cns.value,
+                            },
                         },
                     },
                     .reg => |reg| blk: {
@@ -824,6 +866,9 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
         },
         .label_ref => {
             return irgenError(data, expr.src, "An immediate value doesn't fit here.");
+        },
+        .reg => {
+            return irgenError(data, expr.src, "A register doesn't fit here.");
         },
         .number => {
             return irgenError(data, expr.src, "An immediate value doesn't fit here.");
@@ -872,15 +917,27 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u
             return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
         },
         .label_ref => |lbl_ref| {
-            @panic("TODO");
+            return ImmediateValue{
+                .width = width,
+                .value = .{
+                    .label = scope.getLabel(lbl_ref.name) orelse {
+                        return irgenError(data, expr.src, "Label not found.");
+                    },
+                },
+            };
+        },
+        .reg => |lbl_ref| {
+            return irgenError(data, expr.src, "A register doesn't fit here. This slot is for an immediate value.");
         },
         .number => |num| {
             // uuh uuh
             // runtime bitcast num to `{signed ? "i" : "u"}{width}`
             return ImmediateValue{
                 .width = width,
-                .value = runtimeBitcast(num, width, signed) orelse {
-                    return irgenError(data, expr.src, "This value doesn't fit in this slot");
+                .value = .{
+                    .constant = runtimeBitcast(num, width, signed) orelse {
+                        return irgenError(data, expr.src, "This value doesn't fit in this slot");
+                    },
                 },
             };
         },

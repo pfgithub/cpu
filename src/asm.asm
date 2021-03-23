@@ -10,18 +10,18 @@ zero = (li 0x0)
 }
 {
     replace_value = (li 0x0)
-    replace_addr = (add pc (li :halt_lbl))
+    replace_addr = (add #pc (li :halt_lbl))
     (store replace_addr replace_value)
     halt_lbl: (halt)
 }
-{
-    (jump :skip)
-    (halt)
-    skip:
-}
+//{
+//    (jump :skip)
+//    (halt)
+//    skip:
+//}
 {
     a = (li 0x12)
     b = (li -0x83)
-    c = add(a, b)
+    c = (add a  b)
 }
 (halt)
