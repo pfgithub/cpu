@@ -660,22 +660,6 @@ const IR_Instruction = struct {
         jump_label: LabelDefinition,
 
         // control flow transfer instructions:
-
-        // jumps to the specified target. return address is voided. the next instruction never executes.
-        jump: struct {
-            target: ImmediateValue,
-        },
-        // jumps to the specified target, saving the return address in return_address_loc.
-        // the next instruction will execute, however all unsaved registers will be cleared.
-        call: struct {
-            return_address_loc: SystemRegister,
-            saved_regs: u15, // bit array of SystemRegisters that are preserved across this call
-            target: ImmediateValue,
-        },
-        // jumps to the specified register. return address is voided. the next instruction never executes.
-        ret: struct {
-            jump_address: SystemRegister,
-        },
     },
     src: Src,
     pub fn deinit(instr: IR_Instruction) void {}
@@ -692,23 +676,80 @@ const InstructionID = enum(u8) {
 };
 const InstructionMaxArgsCount = 4;
 
-const InstrInfo = struct {
-    const ArgSpec = union(enum) {
-        constant: struct { width: std.math.Log2Int(u64), value: u64 },
-        reg: struct { name: []const u8, space: RegisterSpace },
-        out: struct { space: RegisterSpace },
-        immediate: struct { name: []const u8, width: std.math.Log2Int(u64), signed: bool },
+// zig fmt: off
+const MultilineInstructionsHack = struct {
+    usingnamespace InstrInfo;
+    pub const Instructions = .{
+        // register allocator doesn't care where the target is.
+        // for the purpose of register allocator control flow, this
+        // instruction is completely normal other than clearing a few
+        // registers after being called
+        .{ "call", instr(.jal, &[_]ArgSpec{
+            constant(u4, @enumToInt(SystemRegister.pc)), // base
+            rawReg("ret_addr", .normal), // ←ret_addr // this is *not* an out register. it's not `#ra = (call …)`.
+            immediate("jump_target", i48), // offset
+            savedRegsBitfield("saved_regs", .normal),
+        }, .next) },
+
+        // register allocator follows this control flow
+        .{ "jump", instr(.jal, &[_]ArgSpec{
+            constant(u4, @enumToInt(SystemRegister.pc)), // base
+            constant(u4, @enumToInt(SystemRegister.pc)), // ←ret_addr (voided)
+            immediateTarget("jump_target", i48) // offset
+        }, .target), },
+
+        // for the purposes of register allocation, this is equivalent to "halt"
+        .{ "ret", instr(.jal, &[_]ArgSpec{
+            reg("jump_target", .normal), // base
+            constant(u4, @enumToInt(SystemRegister.pc)), // ←ret_addr (voided)
+            constant(i48, 0) // offset
+        }, .none) },
+        
+        // "someconditionaljump" (targetImmediate(…)), .either
     };
-    const InstructionSpec = struct {
+};
+// zig fmt: on
+
+const InstrInfo = struct {
+    pub const instructions = std.ComptimeStringMap(InstructionSpec, .{
+        .{ "noop", instr(.noop, &[_]ArgSpec{constant(u56, 0)}, .next) },
+        .{ "li", instr(.li, &[_]ArgSpec{ out(.normal), immediate("value", i52) }, .next) },
+        .{ "add", instr(.add, &[_]ArgSpec{ reg("lhs", .normal), reg("rhs", .normal), out(.normal), constant(u44, 0) }, .next) },
+        .{ "load", instr(.load, &[_]ArgSpec{ reg("addr", .normal), out(.normal), constant(u48, 0) }, .next) },
+        .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }, .next) },
+        .{ "halt", instr(.halt, &[_]ArgSpec{constant(u56, 0)}, .none) },
+    } ++ MultilineInstructionsHack.Instructions);
+
+    pub const CfMode = enum {
+        next, // execution continues to next instruction
+        target, // execution continues to targetImmediate
+        either, // execution continues to either target or next
+        none, // execution halts
+    };
+
+    pub const ArgSpec = union(enum) {
+        constant: struct { width: std.math.Log2Int(u64), value: u64 },
+        // holds a 4-bit register or register-allocated variable
+        reg: struct { name: []const u8, space: RegisterSpace },
+        // holds a 4-bit register
+        raw_reg: struct { name: []const u8, space: RegisterSpace },
+        // holds a 4-bit register or register-allocated variable
+        out: struct { space: RegisterSpace },
+        // holds a width-bit immediate value
+        immediate: struct { name: []const u8, width: std.math.Log2Int(u64), signed: bool },
+        // holds a width-bit immediate value that represents where this instruction will continue if CdMode == .target
+        immediate_target: struct { name: []const u8, width: std.math.Log2Int(u64), signed: bool },
+        // holds information for the register allocator about what registers to mark as cleared after this instruction finishes executing
+        saved_regs_bitfield: struct { name: []const u8, space: RegisterSpace },
+    };
+    pub const InstructionSpec = struct {
         instr_id: InstructionID,
         args: [InstructionMaxArgsCount]ArgSpec,
+        cf_mode: CfMode,
     };
-    fn constant(comptime Width: type, value: Width) ArgSpec {
+    pub fn constant(comptime Width: type, value: Width) ArgSpec {
         const ti: std.builtin.TypeInfo.Int = @typeInfo(Width).Int;
-        const bit_count = ti.bits + switch (ti.signedness) {
-            .unsigned => 0,
-            .signed => 1,
-        };
+        const bit_count = ti.bits;
         return ArgSpec{
             .constant = .{
                 .width = bit_count,
@@ -716,23 +757,39 @@ const InstrInfo = struct {
             },
         };
     }
-    fn out(space: RegisterSpace) ArgSpec {
+    pub fn out(space: RegisterSpace) ArgSpec {
         return ArgSpec{
             .out = .{ .space = space },
         };
     }
-    fn immediate(name: []const u8, comptime Width: type) ArgSpec {
+    pub fn immediate(name: []const u8, comptime Width: type) ArgSpec {
         const ti: std.builtin.TypeInfo.Int = @typeInfo(Width).Int;
         return ArgSpec{
             .immediate = .{ .name = name, .width = std.meta.bitCount(Width), .signed = ti.signedness == .signed },
         };
     }
-    fn reg(name: []const u8, space: RegisterSpace) ArgSpec {
+    pub fn immediateTarget(name: []const u8, comptime Width: type) ArgSpec {
+        const ti: std.builtin.TypeInfo.Int = @typeInfo(Width).Int;
+        return ArgSpec{
+            .immediate_target = .{ .name = name, .width = std.meta.bitCount(Width), .signed = ti.signedness == .signed },
+        };
+    }
+    pub fn reg(name: []const u8, space: RegisterSpace) ArgSpec {
         return ArgSpec{
             .reg = .{ .name = name, .space = space },
         };
     }
-    fn instr(comptime id: InstructionID, comptime args: []const ArgSpec) InstructionSpec {
+    pub fn rawReg(name: []const u8, space: RegisterSpace) ArgSpec {
+        return ArgSpec{
+            .raw_reg = .{ .name = name, .space = space },
+        };
+    }
+    pub fn savedRegsBitfield(name: []const u8, space: RegisterSpace) ArgSpec {
+        return ArgSpec{
+            .saved_regs_bitfield = .{ .name = name, .space = space },
+        };
+    }
+    pub fn instr(comptime id: InstructionID, comptime args: []const ArgSpec, comptime cf_mode: CfMode) InstructionSpec {
         comptime {
             var res_spec: []const ArgSpec = args;
             if (res_spec.len > InstructionMaxArgsCount) @compileError("Too many spec items. Max is InstructionMaxArgsCount");
@@ -742,8 +799,11 @@ const InstrInfo = struct {
                 bit_count += @as(comptime_int, switch (itm) {
                     .constant => |cns| cns.width,
                     .reg => 4,
+                    .raw_reg => 4,
                     .out => 4,
                     .immediate => |imm| imm.width,
+                    .immediate_target => |imm| imm.width,
+                    .saved_regs_bitfield => 0,
                 });
             }
             if (bit_count != 64) @compileError("Does not add up to 64 bits.");
@@ -755,18 +815,10 @@ const InstrInfo = struct {
             return InstructionSpec{
                 .instr_id = id,
                 .args = res_spec[0..InstructionMaxArgsCount].*,
+                .cf_mode = cf_mode,
             };
         }
     }
-
-    pub const instructions = std.ComptimeStringMap(InstructionSpec, .{
-        .{ "noop", instr(.noop, &[_]ArgSpec{constant(u56, 0)}) },
-        .{ "li", instr(.li, &[_]ArgSpec{ out(.normal), immediate("value", i52) }) },
-        .{ "add", instr(.add, &[_]ArgSpec{ reg("lhs", .normal), reg("rhs", .normal), out(.normal), constant(u44, 0) }) },
-        .{ "load", instr(.load, &[_]ArgSpec{ reg("addr", .normal), out(.normal), constant(u48, 0) }) },
-        .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }) },
-        .{ "halt", instr(.halt, &[_]ArgSpec{constant(u56, 0)}) },
-    });
 };
 
 pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!VariableDefinition {
@@ -833,32 +885,6 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
     // },
     switch (expr.value) {
         .instruction => |instr| {
-            // possibly instead of hardcoding these:
-            // add an option "next_instruction"
-            // - normal // 'call' (the call instruction does not care where it jumps to - that might as well be opaque)
-            // - unreachable // 'ret' (where this jumps to is opaque and no return address is set)
-            // - target // 'jump' (the jump instruction is used for control flow)
-            // - oneof[2] both // ''
-            // and then some arg types
-            // - cleared_regs_bitfield (.space)
-            // - target_immediate (width) // 'jump'
-            if (std.mem.eql(u8, instr.name, "jump")) {
-                if (instr.args.len != 1) return irgenError(data, expr.src, "Expected one argument");
-
-                const target = try irgenImmediate(data, scope, 48, true, instr.args[0], out_block);
-
-                try out_block.append(.{
-                    .src = expr.src,
-                    .value = .{
-                        .jump = .{
-                            .target = target,
-                        },
-                    },
-                });
-
-                return;
-            }
-
             const spec: InstrInfo.InstructionSpec = InstrInfo.instructions.get(instr.name) orelse {
                 return irgenError(data, expr.src, "No instruction exists with this name"); // TODO instr.name_src?
             };
@@ -924,6 +950,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg, out_block),
                         };
                     },
+                    else => @panic("TODO"),
                 };
             }
             if (args.next()) |nxt_arg| return irgenError(data, nxt_arg.src, "Extra argument");
@@ -1133,21 +1160,6 @@ pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
         },
         .jump_label => |jlbl| {
             try out.print("{d}:\n", .{jlbl.id});
-        },
-        .jump => |jump| {
-            try out.print("jump", .{});
-            try printIrArg(Arg{ .immediate = jump.target }, out);
-            try out.writeAll("\n");
-        },
-        .call => |call| {
-            try out.print("call", .{});
-            try printIrSysReg(call.return_address_loc, out);
-            try printIrArg(Arg{ .immediate = call.target }, out);
-            try out.print(" {b}\n", .{call.saved_regs});
-        },
-        .ret => |ret| {
-            try out.print("ret", .{});
-            try printIrSysReg(ret.jump_address, out);
         },
     }
 }

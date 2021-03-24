@@ -10,7 +10,7 @@ zero = (li 0x0)
 }
 {
     replace_value = (li 0x0)
-    replace_addr = (add (li 0d3) (add #pc (li :halt_lbl)))
+    replace_addr = (add (li 0d3) (add #pc (li :halt_lbl))) // maybe :… should be based off the decl rather than the expr
     (store replace_addr replace_value)
     halt_lbl: (halt)
 }
