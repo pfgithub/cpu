@@ -656,8 +656,26 @@ const IR_Instruction = struct {
             instr_id: InstructionID,
             args: [InstructionMaxArgsCount]Arg,
         },
+
         jump_label: LabelDefinition,
-        // jmp_instr
+
+        // control flow transfer instructions:
+
+        // jumps to the specified target. return address is voided. the next instruction never executes.
+        jump: struct {
+            target: ImmediateValue,
+        },
+        // jumps to the specified target, saving the return address in return_address_loc.
+        // the next instruction will execute, however all unsaved registers will be cleared.
+        call: struct {
+            return_address_loc: SystemRegister,
+            saved_regs: u15, // bit array of SystemRegisters that are preserved across this call
+            target: ImmediateValue,
+        },
+        // jumps to the specified register. return address is voided. the next instruction never executes.
+        ret: struct {
+            jump_address: SystemRegister,
+        },
     },
     src: Src,
     pub fn deinit(instr: IR_Instruction) void {}
@@ -815,6 +833,32 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
     // },
     switch (expr.value) {
         .instruction => |instr| {
+            // possibly instead of hardcoding these:
+            // add an option "next_instruction"
+            // - normal // 'call' (the call instruction does not care where it jumps to - that might as well be opaque)
+            // - unreachable // 'ret' (where this jumps to is opaque and no return address is set)
+            // - target // 'jump' (the jump instruction is used for control flow)
+            // - oneof[2] both // ''
+            // and then some arg types
+            // - cleared_regs_bitfield (.space)
+            // - target_immediate (width) // 'jump'
+            if (std.mem.eql(u8, instr.name, "jump")) {
+                if (instr.args.len != 1) return irgenError(data, expr.src, "Expected one argument");
+
+                const target = try irgenImmediate(data, scope, 48, true, instr.args[0], out_block);
+
+                try out_block.append(.{
+                    .src = expr.src,
+                    .value = .{
+                        .jump = .{
+                            .target = target,
+                        },
+                    },
+                });
+
+                return;
+            }
+
             const spec: InstrInfo.InstructionSpec = InstrInfo.instructions.get(instr.name) orelse {
                 return irgenError(data, expr.src, "No instruction exists with this name"); // TODO instr.name_src?
             };
@@ -1010,11 +1054,14 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
     return error.Errored;
 }
 
+pub fn printIrSysReg(reg: SystemRegister, out: anytype) @TypeOf(out).Error!void {
+    try out.writeAll("#");
+    try out.writeAll(std.meta.tagName(reg));
+}
 pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void {
     switch (reg.value) {
         .allocated => |acd| {
-            try out.writeAll("#");
-            try out.writeAll(std.meta.tagName(acd));
+            try printIrSysReg(acd, out);
         },
         .unallocated => |una| {
             try out.print("%{d}", .{una.id});
@@ -1086,6 +1133,21 @@ pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
         },
         .jump_label => |jlbl| {
             try out.print("{d}:\n", .{jlbl.id});
+        },
+        .jump => |jump| {
+            try out.print("jump", .{});
+            try printIrArg(Arg{ .immediate = jump.target }, out);
+            try out.writeAll("\n");
+        },
+        .call => |call| {
+            try out.print("call", .{});
+            try printIrSysReg(call.return_address_loc, out);
+            try printIrArg(Arg{ .immediate = call.target }, out);
+            try out.print(" {b}\n", .{call.saved_regs});
+        },
+        .ret => |ret| {
+            try out.print("ret", .{});
+            try printIrSysReg(ret.jump_address, out);
         },
     }
 }
