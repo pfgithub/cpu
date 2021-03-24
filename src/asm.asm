@@ -14,11 +14,11 @@ zero = (li 0x0)
     (store replace_addr replace_value)
     halt_lbl: (halt)
 }
-//{
-//    (jump :skip)
-//    (halt)
-//    skip:
-//}
+{
+    (jump :skip)
+    (halt)
+    skip:
+}
 {
     a = (li 0x12)
     b = (li -0x83)
@@ -26,3 +26,18 @@ zero = (li 0x0)
 }
 #pc = (li 0d0)
 (halt)
+
+// ok.
+// register allocator needs two types of jumps
+// (call #ra :addr #a0 #a1 #a2) // a jump to a pc-relative offset, returns. args: ret_addr address, immediate offset, …saved_registers[]
+// (jmp :addr) // a jump to a pc-relative offset, `noreturn`
+// (condjmp :addr) // a conditional jump, indicates that code will either resume at addr or next instruction. (no conditional jumps are implemented yet)
+// (ret #ra) // a jump to an address, `noreturn`.
+// sample:
+
+//(halt)
+/// function demo_fn(#a0, #a1) #a0
+//demo_fn: {
+//    #a0 = (add #a0 #a1)
+//    (ret #ra) // for the register allocator, does not have a return address
+//}

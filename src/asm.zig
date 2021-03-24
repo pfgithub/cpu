@@ -1095,27 +1095,47 @@ pub fn mainMain() !void {
     defer std.testing.expect(!gpa.deinit());
     const alloc = &gpa.allocator;
 
+    // 0: read the file
+    const args = try std.process.argsAlloc(alloc);
+    defer std.process.argsFree(alloc, args);
+
+    if (args.len != 2) {
+        std.log.err("Expected `{s} file.asm`", .{args[0]});
+        return error.Errored;
+    }
+
+    const file_cont = try std.fs.cwd().readFileAlloc(alloc, args[1], std.math.maxInt(usize));
+    defer alloc.free(file_cont);
+
     // 1: parse the file → ast
     var data = Data{
         .err = null,
-        .ts = TokenStream.from("{" ++ sample_code ++ "}"), // hack for now; there is no parseTopLevel fn yet
+        .ts = TokenStream.from(file_cont), // hack for now; there is no parseTopLevel fn yet
     };
     defer if (data.err) |err| err.deinit();
 
-    const parsed = AstDecl.parse(alloc, &data) catch |e| switch (e) {
-        error.ParseError => {
-            const err_data = data.err.?;
-            return printReportedError(err_data.start, err_data.msg, data.ts.string);
-        },
-        else => return e,
-    };
-    defer parsed.deinit(alloc);
+    var parsed_al = std.ArrayList(AstDecl).init(alloc);
+    defer {
+        for (parsed_al.items) |*it| it.deinit(alloc);
+        parsed_al.deinit();
+    }
+    while (data.ts.peek() != 0) {
+        try parsed_al.append(AstDecl.parse(alloc, &data) catch |e| switch (e) {
+            error.ParseError => {
+                const err_data = data.err.?;
+                return printReportedError(err_data.start, err_data.msg, data.ts.string);
+            },
+            else => return e,
+        });
+    }
 
     if (true) {
         const stdout = std.io.getStdOut().writer();
         try stdout.writeAll("// AST:\n");
-        try printAst(parsed, stdout, .{});
-        try stdout.writeByte('\n');
+        for (parsed_al.items) |parsed| {
+            try printAst(parsed, stdout, .{});
+            try stdout.writeByte('\n');
+        }
         try stdout.writeAll("\n");
     }
 
@@ -1132,7 +1152,7 @@ pub fn mainMain() !void {
     var outest_scope = try Scope.newBase(alloc);
     defer outest_scope.destroy();
 
-    irgen(&irgen_data, outest_scope, parsed.value.block.decls, &unallocated) catch |e| switch (e) {
+    irgen(&irgen_data, outest_scope, parsed_al.items, &unallocated) catch |e| switch (e) {
         IrgenError.IrgenError => {
             const err_data = irgen_data.err.?;
             return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
