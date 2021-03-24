@@ -22,10 +22,22 @@ zero = (li 0x0)
 {
     a = (li 0x12)
     b = (li -0x83)
-    c = (add a  b)
+    c = (add a b)
+}
+{
+    #t0 = (li -0x7)
+    #t1 = (li -0x12)
+    
+    (call #ra :add_fn #s0 #s1 #s2 #s3 #s4 #s5)
 }
 #pc = (li 0d0)
 (halt)
+
+add_fn: {
+    // (TODO clr_regs …all regs)
+    #t0 = (add #t0 #t1)
+    (ret #ra)
+}
 
 // ok.
 // register allocator needs two types of jumps

@@ -473,6 +473,9 @@ const Arg = union(enum) {
     register: VariableDefinition,
     immediate: ImmediateValue,
     out_reg: VariableDefinition,
+    cleared_regs_bitfield: u15,
+    raw_reg: SystemRegister,
+    immediate_target: ImmediateValue,
 };
 
 const IR_Block = struct {
@@ -482,7 +485,23 @@ const IR_Block = struct {
 const Src = struct { start: usize, end: usize };
 
 const SystemRegister = enum(u4) {
-    pc = 0b1111,
+    r0,
+    t0, // not preserved across calls
+    t1, // also used as function arguments and return values
+    t2,
+    t3,
+    t4,
+    t5,
+    s0, // preserved across calls
+    s1,
+    s2,
+    s3,
+    s4,
+    s5,
+    ra, // return address
+    sp, // stack pointer
+    pc,
+    // huh this isn't very many registers
 };
 const VariableDefinition = struct {
     value: union(enum) {
@@ -624,7 +643,8 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out
                         .space = .normal,
                         .value = .{
                             .allocated = std.meta.stringToEnum(SystemRegister, rg) orelse {
-                                return irgenError(data, decl.src, "No register with this name exists"); // TODO exec.out_var_src?
+                                // TODO exec.out_var_src?
+                                return irgenError(data, decl.src, "No register with this name exists");
                             },
                         },
                     },
@@ -649,17 +669,16 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out
 }
 
 const IR_Instruction = struct {
+    // TODO store these and jump labels in seperate arrays in data rather than passing
+    // around an array list everywhere
     value: union(enum) {
-        // normal instruction sets have a few standard instruction types
-        // this doesn't really so all instructions must be able to fit in here
         standard_instr: struct {
             instr_id: InstructionID,
             args: [InstructionMaxArgsCount]Arg,
+            next: CfMode,
         },
 
         jump_label: LabelDefinition,
-
-        // control flow transfer instructions:
     },
     src: Src,
     pub fn deinit(instr: IR_Instruction) void {}
@@ -710,6 +729,13 @@ const MultilineInstructionsHack = struct {
 };
 // zig fmt: on
 
+pub const CfMode = enum {
+    next, // execution continues to next instruction
+    target, // execution continues to targetImmediate
+    either, // execution continues to either target or next
+    none, // execution halts
+};
+
 const InstrInfo = struct {
     pub const instructions = std.ComptimeStringMap(InstructionSpec, .{
         .{ "noop", instr(.noop, &[_]ArgSpec{constant(u56, 0)}, .next) },
@@ -719,13 +745,6 @@ const InstrInfo = struct {
         .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }, .next) },
         .{ "halt", instr(.halt, &[_]ArgSpec{constant(u56, 0)}, .none) },
     } ++ MultilineInstructionsHack.Instructions);
-
-    pub const CfMode = enum {
-        next, // execution continues to next instruction
-        target, // execution continues to targetImmediate
-        either, // execution continues to either target or next
-        none, // execution halts
-    };
 
     pub const ArgSpec = union(enum) {
         constant: struct { width: std.math.Log2Int(u64), value: u64 },
@@ -821,6 +840,19 @@ const InstrInfo = struct {
     }
 };
 
+pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!SystemRegister {
+    switch (expr.value) {
+        .reg => |rg| {
+            return std.meta.stringToEnum(SystemRegister, rg.name) orelse {
+                return irgenError(data, expr.src, "No register with this name exists");
+            };
+        },
+        else => {
+            return irgenError(data, expr.src, "This slot is only for explicit registers eg #pc");
+        },
+    }
+}
+
 pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!VariableDefinition {
     switch (expr.value) {
         .variable => |vbl| {
@@ -829,11 +861,12 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
             };
         },
         .reg => |rg| {
+            // this space thing isn't very well thought out because I'm not actually using it
+            // I think 'scope' has to be a property of the SystemRegister or something idk
+            if (space != .normal) return irgenError(data, expr.src, "Trying to fit non-normal register into normal slot");
             return VariableDefinition{
                 .value = .{
-                    .allocated = std.meta.stringToEnum(SystemRegister, rg.name) orelse {
-                        return irgenError(data, expr.src, "No register with this name exists");
-                    },
+                    .allocated = try irgenSysReg(data, scope, expr, out_block),
                 },
                 .space = .normal,
             };
@@ -950,7 +983,35 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg, out_block),
                         };
                     },
-                    else => @panic("TODO"),
+                    .raw_reg => |rreg| blk: {
+                        const arg = args.next() orelse {
+                            return irgenError(data, expr.src, "Not enough arguments.");
+                        };
+                        break :blk Arg{
+                            .raw_reg = try irgenSysReg(data, scope, arg, out_block),
+                        };
+                    },
+                    .immediate_target => |imm| blk: {
+                        const arg = args.next() orelse {
+                            return irgenError(data, expr.src, "Not enough arguments.");
+                        };
+                        break :blk Arg{
+                            .immediate_target = try irgenImmediate(data, scope, imm.width, imm.signed, arg, out_block),
+                        };
+                    },
+                    .saved_regs_bitfield => |srbf| blk: {
+                        var bitfield_value: u15 = 0;
+                        while (args.next()) |arg| {
+                            const sys_reg = try irgenSysReg(data, scope, arg, out_block);
+                            if (sys_reg == .pc) return irgenError(data, arg.src, "pc does not need to be listed here");
+                            var v: u15 = @as(u15, 1) << @enumToInt(sys_reg);
+                            bitfield_value |= v;
+                        }
+                        break :blk Arg{
+                            .cleared_regs_bitfield = ~bitfield_value,
+                        };
+                        // huh this is an Arg but maybe it should be a property of the instruction
+                    },
                 };
             }
             if (args.next()) |nxt_arg| return irgenError(data, nxt_arg.src, "Extra argument");
@@ -961,6 +1022,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                     .standard_instr = .{
                         .instr_id = spec.instr_id,
                         .args = res_args,
+                        .next = spec.cf_mode,
                     },
                 },
             });
@@ -1104,33 +1166,28 @@ pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void
     // space: RegisterSpace,
 }
 pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
-    // const Arg = union(enum) {
-    //     register: VariableDefinition,
-    //     immediate: ImmediateValue,
-    //     out_reg: VariableDefinition,
-    // };
     switch (item) {
         .register => |reg| {
             try out.writeAll(" ");
             try printIrReg(reg, out);
         },
-        // const ImmediateValue = struct {
-        //     width: std.math.Log2Int(u64),
-        //     value: union(enum) {
-        //         constant: u64,
-        //         label: LabelDefinition, // resolves to the offset between pc and the label
-        //     },
-        // };
-        .immediate => |imm| {
+        .immediate, .immediate_target => |imm| {
             if (imm.width == 0) return;
             switch (imm.value) {
                 .constant => |cons| try out.print(" 0x{x}", .{cons}),
                 .label => |lbl| try out.print(" :{}", .{lbl.id}),
             }
         },
+        .raw_reg => |reg| {
+            try out.writeAll(" ");
+            try printIrSysReg(reg, out);
+        },
         .out_reg => |oreg| {
             try out.writeAll(" ←");
             try printIrReg(oreg, out);
+        },
+        .cleared_regs_bitfield => |crbf| {
+            try out.print(" <clr {b:15}>", .{crbf});
         },
     }
 }
@@ -1152,7 +1209,13 @@ pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
     // };
     switch (item.value) {
         .standard_instr => |instr| {
-            try out.print("    {s}", .{std.meta.tagName(instr.instr_id)});
+            const nextname = switch (instr.next) {
+                .none => "⎋",
+                .target => "→",
+                .next => "↓",
+                .either => "↘",
+            };
+            try out.print("    {s} {s}", .{ nextname, std.meta.tagName(instr.instr_id) });
             for (instr.args) |arg| {
                 try printIrArg(arg, out);
             }
