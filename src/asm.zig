@@ -584,6 +584,7 @@ const IrgenData = struct {
         pub fn deinit(me: Error) void {}
     };
     err: ?Error, // this can just be : Error = undefined // nevermind it can't
+    out_block: *std.ArrayList(IR_Instruction),
 };
 
 const IrgenError = error{ IrgenError, OutOfMemory };
@@ -596,9 +597,11 @@ fn irgenError(data: *IrgenData, src: Src, msg: []const u8) IrgenError {
     return IrgenError.IrgenError;
 }
 
-pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out_block: *std.ArrayList(IR_Instruction)) IrgenError!void {
+pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) IrgenError!void {
     const scope = try Scope.new(parent_scope);
     defer scope.destroy();
+
+    const out_block = data.out_block;
 
     // 1: find and predefine labels
 
@@ -651,10 +654,10 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl, out
                 };
             };
 
-            try irgenReg(data, scope, out_var, exec.expr.*, out_block);
+            try irgenReg(data, scope, out_var, exec.expr.*);
         },
         .block => |block| {
-            try irgen(data, scope, block.decls, out_block);
+            try irgen(data, scope, block.decls);
         },
         .label => |lbl| {
             const label: LabelDefinition = scope.getLabel(lbl.name) orelse unreachable;
@@ -840,7 +843,9 @@ const InstrInfo = struct {
     }
 };
 
-pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!SystemRegister {
+pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr) IrgenError!SystemRegister {
+    const out_block = data.out_block;
+
     switch (expr.value) {
         .reg => |rg| {
             return std.meta.stringToEnum(SystemRegister, rg.name) orelse {
@@ -853,7 +858,9 @@ pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr, out_block: *s
     }
 }
 
-pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!VariableDefinition {
+pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr) IrgenError!VariableDefinition {
+    const out_block = data.out_block;
+
     switch (expr.value) {
         .variable => |vbl| {
             return scope.getVariable(vbl.name) orelse {
@@ -866,7 +873,7 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
             if (space != .normal) return irgenError(data, expr.src, "Trying to fit non-normal register into normal slot");
             return VariableDefinition{
                 .value = .{
-                    .allocated = try irgenSysReg(data, scope, expr, out_block),
+                    .allocated = try irgenSysReg(data, scope, expr),
                 },
                 .space = .normal,
             };
@@ -881,7 +888,7 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
                 },
                 .space = space,
             };
-            try irgenReg(data, scope, slot, expr, out_block);
+            try irgenReg(data, scope, slot, expr);
             return slot;
         },
     }
@@ -905,7 +912,9 @@ fn sliceIterator(slice: anytype) SliceIterator(@TypeOf(slice)) {
     return ResType{ .slice = slice };
 }
 
-pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!void {
+pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, expr: AstExpr) IrgenError!void {
+    const out_block = data.out_block;
+
     // instruction: struct {
     //     name: []const u8,
     //     args: []AstExpr,
@@ -965,7 +974,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .register = try irgenIntermediate(data, scope, reg.space, arg, out_block),
+                            .register = try irgenIntermediate(data, scope, reg.space, arg),
                         };
                     },
                     .out => |out| blk: {
@@ -980,7 +989,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg, out_block),
+                            .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg),
                         };
                     },
                     .raw_reg => |rreg| blk: {
@@ -988,7 +997,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .raw_reg = try irgenSysReg(data, scope, arg, out_block),
+                            .raw_reg = try irgenSysReg(data, scope, arg),
                         };
                     },
                     .immediate_target => |imm| blk: {
@@ -996,13 +1005,13 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .immediate_target = try irgenImmediate(data, scope, imm.width, imm.signed, arg, out_block),
+                            .immediate_target = try irgenImmediate(data, scope, imm.width, imm.signed, arg),
                         };
                     },
                     .saved_regs_bitfield => |srbf| blk: {
                         var bitfield_value: u15 = 0;
                         while (args.next()) |arg| {
-                            const sys_reg = try irgenSysReg(data, scope, arg, out_block);
+                            const sys_reg = try irgenSysReg(data, scope, arg);
                             if (sys_reg == .pc) return irgenError(data, arg.src, "pc does not need to be listed here");
                             var v: u15 = @as(u15, 1) << @enumToInt(sys_reg);
                             bitfield_value |= v;
@@ -1074,7 +1083,9 @@ test "" {
 }
 
 // OutWidth: std.meta.Int(…, …)
-pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u64), signed: bool, expr: AstExpr, out_block: *std.ArrayList(IR_Instruction)) IrgenError!ImmediateValue {
+pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u64), signed: bool, expr: AstExpr) IrgenError!ImmediateValue {
+    const out_block = data.out_block;
+
     switch (expr.value) {
         .instruction => |instr| {
             return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
@@ -1285,11 +1296,12 @@ pub fn mainMain() !void {
 
     var irgen_data = IrgenData{
         .err = null,
+        .out_block = &unallocated,
     };
     var outest_scope = try Scope.newBase(alloc);
     defer outest_scope.destroy();
 
-    irgen(&irgen_data, outest_scope, parsed_al.items, &unallocated) catch |e| switch (e) {
+    irgen(&irgen_data, outest_scope, parsed_al.items) catch |e| switch (e) {
         IrgenError.IrgenError => {
             const err_data = irgen_data.err.?;
             return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
