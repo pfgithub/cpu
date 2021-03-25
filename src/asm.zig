@@ -585,6 +585,11 @@ const IrgenData = struct {
     };
     err: ?Error, // this can just be : Error = undefined // nevermind it can't
     out_block: *std.ArrayList(IR_Instruction),
+    labels: *std.AutoHashMap(usize, IrgenLabel), // label id → out_block index
+};
+const IrgenLabel = struct {
+    res: usize,
+    src: Src,
 };
 
 const IrgenError = error{ IrgenError, OutOfMemory };
@@ -661,12 +666,7 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) Irg
         },
         .label => |lbl| {
             const label: LabelDefinition = scope.getLabel(lbl.name) orelse unreachable;
-            try out_block.append(IR_Instruction{
-                .src = decl.src,
-                .value = .{
-                    .jump_label = label,
-                },
-            });
+            try data.labels.putNoClobber(label.id, .{ .res = out_block.items.len, .src = decl.src });
         },
     };
 }
@@ -680,11 +680,9 @@ const IR_Instruction = struct {
             args: [InstructionMaxArgsCount]Arg,
             next: CfMode,
         },
-
-        jump_label: LabelDefinition,
+        raw_value: u64,
     },
     src: Src,
-    pub fn deinit(instr: IR_Instruction) void {}
 };
 
 const InstructionID = enum(u8) {
@@ -1204,20 +1202,7 @@ pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
 }
 
 pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
-    // const IR_Instruction = struct {
-    //     value: union(enum) {
-    //         // normal instruction sets have a few standard instruction types
-    //         // this doesn't really so all instructions must be able to fit in here
-    //         standard_instr: struct {
-    //             instr_id: InstructionID,
-    //             args: [InstructionMaxArgsCount]Arg,
-    //         },
-    //         jump_label: LabelDefinition,
-    //         // jmp_instr
-    //     },
-    //     src: Src,
-    //     pub fn deinit(instr: IR_Instruction) void {}
-    // };
+    // TODO print labels
     switch (item.value) {
         .standard_instr => |instr| {
             const nextname = switch (instr.next) {
@@ -1226,14 +1211,14 @@ pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
                 .next => "↓",
                 .either => "↘",
             };
-            try out.print("    {s} {s}", .{ nextname, std.meta.tagName(instr.instr_id) });
+            try out.print("{s} {s}", .{ nextname, std.meta.tagName(instr.instr_id) });
             for (instr.args) |arg| {
                 try printIrArg(arg, out);
             }
             try out.writeByte('\n');
         },
-        .jump_label => |jlbl| {
-            try out.print("{d}:\n", .{jlbl.id});
+        .raw_value => |raval| {
+            try out.print("{b}\n", .{raval});
         },
     }
 }
@@ -1289,14 +1274,15 @@ pub fn mainMain() !void {
 
     // 2: transform the ast → unallocated ir
     var unallocated = std.ArrayList(IR_Instruction).init(alloc);
-    defer {
-        for (unallocated.items) |*una| una.deinit();
-        unallocated.deinit();
-    }
+    defer unallocated.deinit();
+
+    var labels = std.AutoHashMap(usize, IrgenLabel).init(alloc);
+    defer labels.deinit();
 
     var irgen_data = IrgenData{
         .err = null,
         .out_block = &unallocated,
+        .labels = &labels,
     };
     var outest_scope = try Scope.newBase(alloc);
     defer outest_scope.destroy();
