@@ -1223,6 +1223,32 @@ pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
     }
 }
 
+pub fn resolveLabels(data: *IrgenData) !void {
+    for (data.out_block.items) |*instr, index| {
+        const index_i64 = @bitCast(i64, index);
+        switch (instr.value) {
+            .standard_instr => |*si| {
+                for (si.args) |*arg| switch (arg.*) {
+                    .immediate, .immediate_target => |*imm| switch (imm.value) {
+                        .label => |*lbl| {
+                            // make sure it fits in width
+                            const target_line = @bitCast(i64, data.labels.get(lbl.id).?.res);
+
+                            const offset = runtimeBitcast(target_line - index_i64, imm.width, true) orelse {
+                                return irgenError(data, instr.src, "Target label is too far away."); // TODO arg.src
+                            };
+                            imm.value = .{ .constant = offset };
+                        },
+                        else => {},
+                    },
+                    else => {},
+                };
+            },
+            else => {},
+        }
+    }
+}
+
 pub fn mainMain() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
@@ -1288,6 +1314,14 @@ pub fn mainMain() !void {
     defer outest_scope.destroy();
 
     irgen(&irgen_data, outest_scope, parsed_al.items) catch |e| switch (e) {
+        IrgenError.IrgenError => {
+            const err_data = irgen_data.err.?;
+            return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
+        },
+        IrgenError.OutOfMemory => return e,
+    };
+
+    resolveLabels(&irgen_data) catch |e| switch (e) {
         IrgenError.IrgenError => {
             const err_data = irgen_data.err.?;
             return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
