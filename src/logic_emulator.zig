@@ -379,7 +379,7 @@ const instr = opaque {
         pub fn int(reg: Register) u4 {
             return @enumToInt(reg);
         }
-     };
+    };
     pub fn instruction(id: u8, args: u56) u64 {
         return bitArray(u64, .{ id, args });
     }
