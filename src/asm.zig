@@ -469,13 +469,16 @@ const ImmediateValue = struct {
         label: LabelDefinition, // resolves to the offset between pc and the label
     },
 };
-const Arg = union(enum) {
-    register: VariableDefinition,
-    immediate: ImmediateValue,
-    out_reg: VariableDefinition,
-    cleared_regs_bitfield: u15,
-    raw_reg: SystemRegister,
-    immediate_target: ImmediateValue,
+const Arg = struct {
+    value: union(enum) {
+        register: VariableDefinition,
+        immediate: ImmediateValue,
+        out_reg: VariableDefinition,
+        cleared_regs_bitfield: u15,
+        raw_reg: SystemRegister,
+        immediate_target: ImmediateValue,
+    },
+    src: Src,
 };
 
 const IR_Block = struct {
@@ -672,8 +675,6 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) Irg
 }
 
 const IR_Instruction = struct {
-    // TODO store these and jump labels in seperate arrays in data rather than passing
-    // around an array list everywhere
     value: union(enum) {
         standard_instr: struct {
             instr_id: InstructionID,
@@ -960,26 +961,36 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
             for (spec.args) |spec_arg, i| {
                 res_args[i] = switch (spec_arg) {
                     .constant => |cns| Arg{
-                        .immediate = .{
-                            .width = cns.width,
-                            .value = .{
-                                .constant = cns.value,
+                        .value = .{
+                            .immediate = .{
+                                .width = cns.width,
+                                .value = .{
+                                    .constant = cns.value,
+                                },
                             },
                         },
+                        .src = expr.src,
                     },
                     .reg => |reg| blk: {
                         const arg = args.next() orelse {
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .register = try irgenIntermediate(data, scope, reg.space, arg),
+                            .value = .{
+                                .register = try irgenIntermediate(data, scope, reg.space, arg),
+                            },
+                            .src = arg.src,
                         };
                     },
                     .out => |out| blk: {
+                        const oreg = out_reg orelse {
+                            return irgenError(data, expr.src, "Return value is ignored");
+                        };
                         break :blk Arg{
-                            .out_reg = out_reg orelse {
-                                return irgenError(data, expr.src, "Return value is ignored");
+                            .value = .{
+                                .out_reg = oreg,
                             },
+                            .src = expr.src, // TODO fix
                         };
                     },
                     .immediate => |imm| blk: {
@@ -987,7 +998,10 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg),
+                            .value = .{
+                                .immediate = try irgenImmediate(data, scope, imm.width, imm.signed, arg),
+                            },
+                            .src = arg.src,
                         };
                     },
                     .raw_reg => |rreg| blk: {
@@ -995,7 +1009,10 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .raw_reg = try irgenSysReg(data, scope, arg),
+                            .value = .{
+                                .raw_reg = try irgenSysReg(data, scope, arg),
+                            },
+                            .src = arg.src,
                         };
                     },
                     .immediate_target => |imm| blk: {
@@ -1003,7 +1020,10 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
-                            .immediate_target = try irgenImmediate(data, scope, imm.width, imm.signed, arg),
+                            .value = .{
+                                .immediate_target = try irgenImmediate(data, scope, imm.width, imm.signed, arg),
+                            },
+                            .src = arg.src,
                         };
                     },
                     .saved_regs_bitfield => |srbf| blk: {
@@ -1015,7 +1035,10 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             bitfield_value |= v;
                         }
                         break :blk Arg{
-                            .cleared_regs_bitfield = ~bitfield_value,
+                            .value = .{
+                                .cleared_regs_bitfield = ~bitfield_value,
+                            },
+                            .src = expr.src, // TODO fix
                         };
                         // huh this is an Arg but maybe it should be a property of the instruction
                     },
@@ -1175,7 +1198,7 @@ pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void
     // space: RegisterSpace,
 }
 pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
-    switch (item) {
+    switch (item.value) {
         .register => |reg| {
             try out.writeAll(" ");
             try printIrReg(reg, out);
@@ -1228,7 +1251,7 @@ pub fn resolveLabels(data: *IrgenData) !void {
         const index_i64 = @bitCast(i64, index);
         switch (instr.value) {
             .standard_instr => |*si| {
-                for (si.args) |*arg| switch (arg.*) {
+                for (si.args) |*arg| switch (arg.value) {
                     .immediate, .immediate_target => |*imm| switch (imm.value) {
                         .label => |*lbl| {
                             // make sure it fits in width
@@ -1260,7 +1283,7 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
         .standard_instr => |sinstr| {
             var res: u64 = @enumToInt(sinstr.instr_id);
             var offset: std.math.Log2Int(u64) = 8;
-            for (sinstr.args) |arg| switch (arg) {
+            for (sinstr.args) |arg| switch (arg.value) {
                 .register => |reg| switch (reg.value) {
                     .allocated => |areg| {
                         res |= @as(u64, @enumToInt(areg)) << offset;
