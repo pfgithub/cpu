@@ -1282,11 +1282,12 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
         .raw_value => |rv| return rv,
         .standard_instr => |sinstr| {
             var res: u64 = @enumToInt(sinstr.instr_id);
-            var offset: std.math.Log2Int(u64) = 8;
+            const L2i = std.math.Log2Int(u64);
+            var offset: u7 = 8;
             for (sinstr.args) |arg| switch (arg.value) {
                 .register => |reg| switch (reg.value) {
                     .allocated => |areg| {
-                        res |= @as(u64, @enumToInt(areg)) << offset;
+                        res |= @as(u64, @enumToInt(areg)) << @intCast(L2i, offset);
                         offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
                     },
                     .unallocated => {
@@ -1295,12 +1296,14 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
                     },
                 },
                 .immediate => |imm| {
-                    res |= @as(u64, imm.value.constant) << offset;
-                    offset += imm.width;
+                    if (imm.width != 0) {
+                        res |= @as(u64, imm.value.constant) << @intCast(L2i, offset);
+                        offset += imm.width;
+                    }
                 },
                 .out_reg => |reg| switch (reg.value) {
                     .allocated => |areg| {
-                        res |= @as(u64, @enumToInt(areg)) << offset;
+                        res |= @as(u64, @enumToInt(areg)) << @intCast(L2i, offset);
                         offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
                     },
                     .unallocated => {
@@ -1310,19 +1313,21 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
                 },
                 .cleared_regs_bitfield => {},
                 .raw_reg => |areg| {
-                    res |= @as(u64, @enumToInt(areg)) << offset;
+                    res |= @as(u64, @enumToInt(areg)) << @intCast(L2i, offset);
                     offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
                 },
                 // this should be merged with .immediate using inline switch once it's released
                 .immediate_target => |imm| {
-                    res |= @as(u64, imm.value.constant) << offset;
-                    offset += imm.width;
+                    if (imm.width != 0) {
+                        res |= @as(u64, imm.value.constant) << @intCast(L2i, offset);
+                        offset += imm.width;
+                    }
                 },
             };
             if (offset != 64) unreachable;
+            return res;
         },
     }
-    return 0;
 }
 
 pub fn mainMain() !void {
@@ -1413,16 +1418,23 @@ pub fn mainMain() !void {
     }
 
     // 3: transform the unallocated ir → machine code
-    var res_code = std.ArrayList(u64).init(alloc);
-    defer res_code.deinit();
+    var res_code = try alloc.alloc(u64, unallocated.items.len);
+    defer alloc.free(res_code);
 
     var codegen_error: ?IrgenData.Error = null;
 
-    for (unallocated.items) |instr| {
+    for (unallocated.items) |instr, i| {
         const value = codegen(instr, &codegen_error) catch |e| switch (e) {
             error.CodegenError => return printReportedError(codegen_error.?.src.start, codegen_error.?.msg, file_cont),
         };
-        try res_code.append(value);
+        res_code[i] = value;
+    }
+
+    if (true) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.writeAll("// Codegen:\n");
+        for (res_code) |item| try stdout.print("{b:0>64}\n", .{item});
+        try stdout.writeAll("\n");
     }
 }
 

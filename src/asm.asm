@@ -1,17 +1,20 @@
-zero = (li 0x0)
+#r0 = (li 0x0)
 {
-    a = (li 0x79A)
-    b = (li 0x347A)
-    c = (add a b)
+    #t1 = (li 0x79A)
+    #t2 = (li 0x347A)
+    #t1 = (add #t1 #t2)
 }
 {
-    addr = (li 0o10)
-    result = (load addr)
+    #t1 = (li 0o10)
+    #t2 = (load #t1)
 }
 {
-    replace_value = (li 0x0)
-    replace_addr = (add (li 0d3) (add #pc (li :halt_lbl))) // maybe :… should be based off the decl rather than the expr
-    (store replace_addr replace_value)
+    #t1 = (li 0x0)
+    #t2 = (li 0d3)
+    #t3 = (li :halt_lbl)
+    #t4 = (add #pc #t3)
+    #t2 = (add #t2 #t4) // maybe :… should be based off the decl rather than the expr
+    (store #t1 #t2)
     halt_lbl: (halt)
 }
 {
@@ -20,9 +23,9 @@ zero = (li 0x0)
     skip:
 }
 {
-    a = (li 0x12)
-    b = (li -0x83)
-    c = (add a b)
+    #t1 = (li 0x12)
+    #t2 = (li -0x83)
+    #t1 = (add #t1 #t2)
 }
 {
     #t0 = (li -0x7)
@@ -41,15 +44,15 @@ add_fn: {
 
 // ok.
 // register allocator needs two types of jumps
-// (call #ra :addr #a0 #a1 #a2) // a jump to a pc-relative offset, returns. args: ret_addr address, immediate offset, …saved_registers[]
+// (call #ta :addr #a0 #a1 #a2) // a jump to a pc-relative offset, returns. args: ret_addr address, immediate offset, …saved_registers[]
 // (jmp :addr) // a jump to a pc-relative offset, `noreturn`
 // (condjmp :addr) // a conditional jump, indicates that code will either resume at addr or next instruction. (no conditional jumps are implemented yet)
-// (ret #ra) // a jump to an address, `noreturn`.
+// (ret #ta) // a jump to an address, `noreturn`.
 // sample:
 
 //(halt)
 /// function demo_fn(#a0, #a1) #a0
 //demo_fn: {
 //    #a0 = (add #a0 #a1)
-//    (ret #ra) // for the register allocator, does not have a return address
+//    (ret #ta) // for the register allocator, does not have a return address
 //}
