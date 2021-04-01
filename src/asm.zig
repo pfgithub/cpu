@@ -1249,6 +1249,59 @@ pub fn resolveLabels(data: *IrgenData) !void {
     }
 }
 
+pub fn codegenError(err: *?IrgenData.Error, src: Src, msg: []const u8) error{CodegenError} {
+    err.* = .{ .src = src, .msg = msg };
+    return error.CodegenError;
+}
+
+pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
+    switch (item.value) {
+        .raw_value => |rv| return rv,
+        .standard_instr => |sinstr| {
+            var res: u64 = @enumToInt(sinstr.instr_id);
+            var offset: std.math.Log2Int(u64) = 8;
+            for (sinstr.args) |arg| switch (arg) {
+                .register => |reg| switch (reg.value) {
+                    .allocated => |areg| {
+                        res |= @as(u64, @enumToInt(areg)) << offset;
+                        offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
+                    },
+                    .unallocated => {
+                        // TODO error at the arg
+                        return codegenError(err, item.src, "Register allocation is not supported (yet)");
+                    },
+                },
+                .immediate => |imm| {
+                    res |= @as(u64, imm.value.constant) << offset;
+                    offset += imm.width;
+                },
+                .out_reg => |reg| switch (reg.value) {
+                    .allocated => |areg| {
+                        res |= @as(u64, @enumToInt(areg)) << offset;
+                        offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
+                    },
+                    .unallocated => {
+                        // TODO error at the arg
+                        return codegenError(err, item.src, "Register allocation is not supported (yet)");
+                    },
+                },
+                .cleared_regs_bitfield => {},
+                .raw_reg => |areg| {
+                    res |= @as(u64, @enumToInt(areg)) << offset;
+                    offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
+                },
+                // this should be merged with .immediate using inline switch once it's released
+                .immediate_target => |imm| {
+                    res |= @as(u64, imm.value.constant) << offset;
+                    offset += imm.width;
+                },
+            };
+            if (offset != 64) unreachable;
+        },
+    }
+    return 0;
+}
+
 pub fn mainMain() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
@@ -1316,7 +1369,7 @@ pub fn mainMain() !void {
     irgen(&irgen_data, outest_scope, parsed_al.items) catch |e| switch (e) {
         IrgenError.IrgenError => {
             const err_data = irgen_data.err.?;
-            return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
+            return printReportedError(err_data.src.start, err_data.msg, file_cont);
         },
         IrgenError.OutOfMemory => return e,
     };
@@ -1324,7 +1377,7 @@ pub fn mainMain() !void {
     resolveLabels(&irgen_data) catch |e| switch (e) {
         IrgenError.IrgenError => {
             const err_data = irgen_data.err.?;
-            return printReportedError(err_data.src.start, err_data.msg, data.ts.string);
+            return printReportedError(err_data.src.start, err_data.msg, file_cont);
         },
         IrgenError.OutOfMemory => return e,
     };
@@ -1337,6 +1390,17 @@ pub fn mainMain() !void {
     }
 
     // 3: transform the unallocated ir → machine code
+    var res_code = std.ArrayList(u64).init(alloc);
+    defer res_code.deinit();
+
+    var codegen_error: ?IrgenData.Error = null;
+
+    for (unallocated.items) |instr| {
+        const value = codegen(instr, &codegen_error) catch |e| switch (e) {
+            error.CodegenError => return printReportedError(codegen_error.?.src.start, codegen_error.?.msg, file_cont),
+        };
+        try res_code.append(value);
+    }
 }
 
 pub fn main() !u8 {
