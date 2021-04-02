@@ -357,55 +357,6 @@ pub fn range(max: usize) []const void {
     return @as([]const void, &[_]void{}).ptr[0..max];
 }
 
-// <X extends int>(rest: u{X}, bits: []u{int}) u{X}
-fn bitArray(comptime Rest: type, bits: anytype) Rest {
-    comptime var shift: comptime_int = 0;
-    var res: Rest = 0;
-    inline for (@typeInfo(@TypeOf(bits)).Struct.fields) |field| {
-        comptime const int_bits = @typeInfo(field.field_type).Int.bits;
-        const bit = @field(bits, field.name);
-        res |= @as(Rest, bit) << shift;
-        comptime shift += int_bits;
-    }
-    comptime if (shift != @typeInfo(Rest).Int.bits) @compileError("bits don't add up to specified bit count");
-    return res;
-}
-
-// zig fmt: off
-const instr = opaque {
-    const Register = enum(u4) {
-        r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, rA, rB, rC, rD, rE, pc,
-// zig fmt: on
-        pub fn int(reg: Register) u4 {
-            return @enumToInt(reg);
-        }
-    };
-    pub fn instruction(id: u8, args: u56) u64 {
-        return bitArray(u64, .{ id, args });
-    }
-    pub fn li(reg: Register, immediate: i52) u64 {
-        return instruction(0b0000001_0, bitArray(u56, .{ reg.int(), @bitCast(u52, immediate) }));
-    }
-    pub fn add(a: Register, b: Register, out: Register) u64 {
-        return instruction(0b0000010_0, bitArray(u56, .{ a.int(), b.int(), out.int(), @as(u44, 0) }));
-    }
-    pub fn load(addr: Register, out: Register) u64 {
-        return instruction(0b0000011_0, bitArray(u56, .{ addr.int(), out.int(), @as(u48, 0) }));
-    }
-    pub fn store(addr: Register, value: Register) u64 {
-        return instruction(0b0000100_0, bitArray(u56, .{ addr.int(), value.int(), @as(u48, 0) }));
-    }
-    pub fn jal(res: Register, offset: i48, ret_addr: Register) u64 {
-        return instruction(0b0000101_0, bitArray(u56, .{ res.int(), ret_addr.int(), @bitCast(u48, offset) }));
-    }
-    // pub fn eqljmp(a: Register, b: Register, res: Register) u64 {
-    //     return instruction(0b0000110_0, bitArray(u56, .{ a.int(), b.int(), res.int(), @as(u44, 0) }));
-    // }
-
-    // what do I need:
-    // a jump and link instruction (jumps 🙲 sets the return address register to (instr)+1)
-};
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.testing.expect(!gpa.deinit());
@@ -423,25 +374,26 @@ pub fn main() !void {
     var ram = try alloc.alloc(u64, 1000000); // 1mb
     defer alloc.free(ram);
     for (ram) |*it| it.* = 0xAAAAAAAAAAAAAAAA;
+
+    // if (args.len != 2) {
+    //     std.log.err("Expected `{s} kernel.bin`", .{args[0]});
+    //     return error.Errored;
+    // }
+
+    const file = try std.fs.cwd().openFile("src/asm.bin", .{});
+    defer file.close();
+    const reader = file.reader();
+
     ram[0x0] = undefined; // ram[0] is invalid and doesn't exist
-    ram[0x1] = instr.li(.r0, 0x79A);
-    ram[0x2] = instr.li(.r1, 0x347A);
-    ram[0x3] = instr.add(.r0, .r1, .r2);
-    ram[0x4] = instr.li(.r3, 1 << 3);
-    ram[0x5] = instr.load(.r3, .r0);
-    ram[0x6] = instr.li(.r3, 9 << 3); // li .r3 &replace_this_instr
-    ram[0x7] = instr.li(.r1, @intCast(u51, instr.li(.r1, 0xC0DE0000)));
-    ram[0x8] = instr.store(.r3, .r1);
-    ram[0x9] = instr.li(.r1, 0xBAD); // replace_this_instr←
-    ram[0xA] = instr.jal(.pc, 2, .r3); // jal pc+2 (&jmp_res)
-    ram[0xB] = instr.instruction(0b1111111_0, 0); // (halt)
-    ram[0xC] = instr.li(.r2, 0x11C0DE55); // jmp_res←
-    ram[0xD] = instr.li(.r0, 0x12);
-    ram[0xE] = instr.li(.r1, -0x83);
-    ram[0xF] = instr.add(.r0, .r1, .r0);
-    ram[0x10] = instr.li(.r5, 0);
-    ram[0x11] = instr.add(.r5, .pc, .r3);
-    ram[0x12] = instr.instruction(0b1111111_0, 0); // (halt)
+
+    var i: usize = 1;
+    while (true) : (i += 1) {
+        const instr = reader.readIntLittle(u64) catch |e| switch (e) {
+            error.EndOfStream => break,
+            else => return e,
+        };
+        ram[i] = instr;
+    }
 
     std.log.info("Ram initialized in: {}", .{timer.read()});
 
@@ -453,8 +405,7 @@ pub fn main() !void {
 
     timer.reset();
 
-    var i: usize = 0;
-    while (i < 30) : (i += 1) {
+    for (range(30)) |_| {
         const res = executor.cycle(inputs);
         std.log.info("{X}: r0: {X}, r1: {X}, r2: {X}, r3: {X}, ram_set_v: {X}", .{ res.pc, @bitCast(i64, res.r0), @bitCast(i64, res.r1), res.r2, res.r3, res.ram_out_set_value });
         inputs = updateInputs(res, ram);

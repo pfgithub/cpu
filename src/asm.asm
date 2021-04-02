@@ -10,11 +10,9 @@
 }
 {
     #t1 = (li 0x0)
-    #t2 = (li 0d3)
-    #t3 = (li :halt_lbl)
-    #t4 = (add #pc #t3)
-    #t2 = (add #t2 #t4) // maybe :… should be based off the decl rather than the expr
-    (store #t1 #t2)
+    #t2 = (li 0o20)
+    #t2 = (add #t2 #pc)
+    (store #t2 #t1)
     halt_lbl: (halt)
 }
 {
@@ -33,7 +31,7 @@
     
     (call #ra :add_fn #s0 #s1 #s2 #s3 #s4 #s5)
 }
-#pc = (li 0d0)
+#r0 = (li 0xAAAAAA)
 (halt)
 
 add_fn: {
