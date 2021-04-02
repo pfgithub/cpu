@@ -1339,8 +1339,8 @@ pub fn mainMain() !void {
     const args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
 
-    if (args.len != 2) {
-        std.log.err("Expected `{s} file.asm`", .{args[0]});
+    if (args.len != 3) {
+        std.log.err("Expected `{s} file.asm out.bin`", .{args[0]});
         return error.Errored;
     }
 
@@ -1435,6 +1435,14 @@ pub fn mainMain() !void {
         try stdout.writeAll("// Codegen:\n");
         for (res_code) |item| try stdout.print("{b:0>64}\n", .{item});
         try stdout.writeAll("\n");
+    }
+
+    const out_file = try std.fs.cwd().createFile(args[2], .{});
+    defer out_file.close();
+    const of_writer = out_file.writer();
+
+    for (res_code) |item| {
+        try of_writer.writeIntLittle(u64, item);
     }
 }
 
