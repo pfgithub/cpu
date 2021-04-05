@@ -81,6 +81,7 @@ fn readID(stream: *TokenStream) ?[]const u8 {
 fn readInstrID(stream: *TokenStream) ?[]const u8 {
     return readAny(stream, isInstrIdentChar);
 }
+/// this function really likes the taste of whitespace
 fn eatWhitespace(stream: *TokenStream) void {
     var li = stream.index;
     while (true) {
@@ -131,6 +132,7 @@ pub fn readNumber(data: *Data) !?i64 {
 }
 
 const AstExpr = struct {
+    const BitLiteral = struct { width: u8, value: *AstExpr };
     value: union(enum) {
         instruction: struct {
             name: []const u8,
@@ -145,6 +147,7 @@ const AstExpr = struct {
         reg: struct {
             name: []const u8,
         },
+        bit_literal: []BitLiteral,
         number: i64,
     },
     src: Src,
@@ -158,6 +161,13 @@ const AstExpr = struct {
             .label_ref => {},
             .reg => {},
             .number => {},
+            .bit_literal => |bl| {
+                for (bl) |v| {
+                    v.value.deinit(alloc);
+                    alloc.destroy(v.value);
+                }
+                alloc.free(bl);
+            },
         }
     }
     pub fn parse(alloc: *std.mem.Allocator, data: *Data) error{ ParseError, OutOfMemory }!AstExpr {
@@ -184,7 +194,7 @@ const AstExpr = struct {
                 .value = .{ .label_ref = .{ .name = id } },
             };
         }
-        if (ts.startsWithTake("#")) {
+        if (ts.startsWithTake(".")) {
             const id = readID(ts) orelse return parseError(data, start_index, "expected `#reg_name`");
             const end_index = ts.index;
             eatWhitespace(ts);
@@ -192,6 +202,67 @@ const AstExpr = struct {
             return AstExpr{
                 .src = .{ .start = start_index, .end = end_index },
                 .value = .{ .reg = .{ .name = id } },
+            };
+        }
+        if (ts.startsWithTake("[")) {
+            var res_items = std.ArrayList(AstExpr.BitLiteral).init(alloc);
+            errdefer {
+                for (res_items.items) |item| {
+                    item.value.deinit(alloc);
+                    alloc.destroy(item.value);
+                }
+                res_items.deinit();
+            }
+
+            while (true) {
+                eatWhitespace(ts);
+                var num_start = ts.index;
+                while (switch (ts.peek()) {
+                    '0'...'9' => true,
+                    else => false,
+                }) {
+                    _ = ts.take();
+                }
+                const num = std.fmt.parseInt(u8, ts.string[num_start..ts.index], 10) catch |e|
+                    return parseError(data, num_start, "number too big") //
+                ;
+                if (!ts.startsWithTake("x")) return parseError(data, ts.index, "expected 'x' eg [8x 0d12]");
+                eatWhitespace(ts); // option to check if any was eaten? this should error if no whitespace
+
+                {
+                    var expr_dupe = try alloc.create(AstExpr);
+                    errdefer alloc.destroy(expr_dupe);
+
+                    expr_dupe.* = try parse(alloc, data);
+                    errdefer expr_dupe.deinit(alloc);
+
+                    try res_items.append(.{ .width = num, .value = expr_dupe });
+                }
+
+                eatWhitespace(ts);
+
+                if (!ts.startsWithTake("]")) return parseError(data, ts.index, "expected ']'");
+                if (!ts.startsWithTake("[")) break;
+            }
+
+            return AstExpr{
+                .src = .{ .start = start_index, .end = ts.index },
+                .value = .{ .bit_literal = res_items.toOwnedSlice() },
+            };
+        }
+        if (ts.startsWithTake("'")) {
+            var si = ts.index;
+            const byte_len = std.unicode.utf8ByteSequenceLength(ts.peek()) catch |e| return parseError(data, ts.index, "invalid utf-8 codepoint");
+            if (si + byte_len > ts.string.len) return parseError(data, ts.index, "invalid utf-8 codepoint");
+            const byte_buf = ts.string[si .. si + byte_len];
+            ts.index += byte_buf.len;
+            const value = std.unicode.utf8Decode(byte_buf) catch |e| return parseError(data, ts.index, "invalid utf-8 codepoint");
+            if (!ts.startsWithTake("'")) return parseError(data, ts.index, "Expected at most one utf-8 codepoint, eg '…'");
+            const end_index = ts.index;
+            eatWhitespace(ts);
+            return AstExpr{
+                .src = .{ .start = start_index, .end = end_index },
+                .value = .{ .number = value },
             };
         }
         if (try readNumber(data)) |nv| {
@@ -292,7 +363,7 @@ const AstDecl = struct {
         const start_index = ts.index;
         errdefer ts.index = start_index;
 
-        const swhash = ts.startsWithTake("#");
+        const swhash = ts.startsWithTake(".");
         const id_opt = readID(ts);
         if (id_opt == null) ts.index = start_index;
 
@@ -452,6 +523,11 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
         .number => |num| {
             try out.print("{d}", .{num});
         },
+        .bit_literal => |bl| for (bl) |bit| {
+            try out.print("[{d} ", .{bit.width});
+            try printAstExpr(bit.value.*, out, indent);
+            try out.writeAll("]");
+        },
     }
 }
 
@@ -463,7 +539,7 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
 const RegisterSpace = enum { normal };
 
 const ImmediateValue = struct {
-    width: std.math.Log2Int(u64),
+    width: u8,
     value: union(enum) {
         constant: u64,
         label: LabelDefinition, // resolves to the offset between pc and the label
@@ -693,6 +769,7 @@ const InstructionID = enum(u8) {
     load = 0b0000011_0,
     store = 0b0000100_0,
     jal = 0b0000101_0,
+    write = 0b0000000_1,
     halt = 0b1111111_0,
 };
 const InstructionMaxArgsCount = 4;
@@ -746,6 +823,7 @@ const InstrInfo = struct {
         .{ "load", instr(.load, &[_]ArgSpec{ reg("addr", .normal), out(.normal), constant(u48, 0) }, .next) },
         .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }, .next) },
         .{ "halt", instr(.halt, &[_]ArgSpec{constant(u56, 0)}, .none) },
+        .{ "write", instr(.write, &[_]ArgSpec{ reg("value", .normal), constant(u52, 0) }, .none) },
     } ++ MultilineInstructionsHack.Instructions);
 
     pub const ArgSpec = union(enum) {
@@ -1069,15 +1147,19 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
         .number => {
             return irgenError(data, expr.src, "An immediate value doesn't fit here.");
         },
+        .bit_literal => {
+            return irgenError(data, expr.src, "An immediate value doesn't fit here.");
+        },
     }
 }
 
-fn runtimeBitcast(num: i64, width: std.math.Log2Int(u64), signed: bool) ?u64 {
-    const mask = @as(u64, std.math.maxInt(u64)) << width;
+fn runtimeBitcast(num: i64, width: u8, signed: bool) ?u64 {
+    if (width == 0) return 0;
+    const mask = std.math.shl(u64, std.math.maxInt(u64), width);
     const num_bcd = @bitCast(u64, num);
 
     if (signed) {
-        const sbit = @as(u64, std.math.maxInt(u64)) << (width - 1);
+        const sbit = std.math.shl(u64, std.math.maxInt(u64), width - 1);
         if (num_bcd & mask == 0 and num_bcd & sbit == 0) {
             return num_bcd;
         } else if (num_bcd & mask == mask and num_bcd & sbit == sbit) {
@@ -1104,7 +1186,7 @@ test "" {
 }
 
 // OutWidth: std.meta.Int(…, …)
-pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u64), signed: bool, expr: AstExpr) IrgenError!ImmediateValue {
+pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: u8, signed: bool, expr: AstExpr) IrgenError!ImmediateValue {
     const out_block = data.out_block;
 
     switch (expr.value) {
@@ -1137,6 +1219,23 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: std.math.Log2Int(u
                         return irgenError(data, expr.src, "This value doesn't fit in this slot");
                     },
                 },
+            };
+        },
+        .bit_literal => |bl| {
+            var total_w: u8 = 0;
+            var res_int: u64 = 0;
+            for (bl) |component| {
+                var immediate_value = try irgenImmediate(data, scope, component.width, false, component.value.*);
+                if (immediate_value.value != .constant) return irgenError(data, expr.src, "TODO support non-constant values here");
+
+                res_int |= std.math.shl(u64, immediate_value.value.constant, total_w);
+                // std.math.add for overflow protection
+                total_w = std.math.add(u8, total_w, component.width) catch |e| return irgenError(data, component.value.src, "Total width too big");
+                if (total_w > width) return irgenError(data, expr.src, "Total too wide for slot");
+            }
+            return ImmediateValue{
+                .width = width,
+                .value = .{ .constant = res_int },
             };
         },
     }
@@ -1176,7 +1275,7 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
 }
 
 pub fn printIrSysReg(reg: SystemRegister, out: anytype) @TypeOf(out).Error!void {
-    try out.writeAll("#");
+    try out.writeAll(".");
     try out.writeAll(std.meta.tagName(reg));
 }
 pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void {
@@ -1283,7 +1382,7 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
         .standard_instr => |sinstr| {
             var res: u64 = @enumToInt(sinstr.instr_id);
             const L2i = std.math.Log2Int(u64);
-            var offset: u7 = 8;
+            var offset: u8 = 8;
             for (sinstr.args) |arg| switch (arg.value) {
                 .register => |reg| switch (reg.value) {
                     .allocated => |areg| {
