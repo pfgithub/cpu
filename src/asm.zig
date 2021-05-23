@@ -1429,9 +1429,116 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
     }
 }
 
+// disasm TODO:
+// mark lines which are jumped to using immediate targets an label them
+// use same syntax as normal asm #t1 = (li 1984) instead of (li →#t1 1984)
+fn printArgDisasm(arg: InstrInfo.ArgSpec, bitr: anytype, out: anytype) !void {
+    switch (arg) {
+        .constant => |cons| {
+            var imm_v = try bitr.readBitsNoEof(u64, cons.width);
+            if (imm_v != cons.value) {
+                try out.print(" «bad magic {d} ≠ {d}»", .{ imm_v, cons.value });
+            }
+            // (1 << (width + 1)) - 1
+            // check that value == extracted value else print some warning
+            // can I use a std.io.bitReader for this?
+            // yeah I think so
+        },
+        .reg => |reg| {
+            const reg_id = try bitr.readBitsNoEof(u4, 4);
+            try out.print(" #{s}", .{@tagName(@intToEnum(SystemRegister, reg_id))});
+        },
+        .raw_reg => |reg| {
+            const reg_id = try bitr.readBitsNoEof(u4, 4);
+            try out.print(" #{s}", .{@tagName(@intToEnum(SystemRegister, reg_id))});
+        },
+        .out => |outr| {
+            const reg_id = try bitr.readBitsNoEof(u4, 4);
+            try out.print(" →#{s}", .{@tagName(@intToEnum(SystemRegister, reg_id))});
+        },
+        .immediate => |imm| {
+            var imm_v = try bitr.readBitsNoEof(u64, imm.width);
+            var imm_s = @bitCast(i64, imm_v);
+            if (imm.signed) {
+                const negative_mask = @as(u64, std.math.maxInt(u64)) << (imm.width - 1);
+                if (imm_v & negative_mask != 0) {
+                    imm_s = @bitCast(i64, imm_v | negative_mask);
+                }
+            }
+            try out.print(" {d}", .{imm_s});
+        },
+        .immediate_target => |imm| {
+            var imm_v = try bitr.readBitsNoEof(u64, imm.width);
+            var imm_s = @bitCast(i64, imm_v);
+            if (imm.signed) {
+                const negative_mask = @as(u64, std.math.maxInt(u64)) << (imm.width - 1);
+                if (imm_v & negative_mask != 0) {
+                    imm_s = @bitCast(i64, imm_v | negative_mask);
+                }
+            }
+            try out.print(" →:{d}", .{imm_s});
+        },
+        .saved_regs_bitfield => |srbf| {
+            try out.print(" «TODO saved regs»", .{});
+        },
+        // pub const ArgSpec = union(enum) {
+        //     constant: struct { width: std.math.Log2Int(u64), value: u64 },
+        //     // holds a 4-bit register or register-allocated variable
+        //     reg: struct { name: []const u8, space: RegisterSpace },
+        //     // holds a 4-bit register
+        //     raw_reg: struct { name: []const u8, space: RegisterSpace },
+        //     // holds a 4-bit register or register-allocated variable
+        //     out: struct { space: RegisterSpace },
+        //     // holds a width-bit immediate value
+        //     immediate: struct { name: []const u8, width: std.math.Log2Int(u64), signed: bool },
+        //     // holds a width-bit immediate value that represents where this instruction will continue if CdMode == .target
+        //     immediate_target: struct { name: []const u8, width: std.math.Log2Int(u64), signed: bool },
+        //     // holds information for the register allocator about what registers to mark as cleared after this instruction finishes executing
+        //     saved_regs_bitfield: struct { name: []const u8, space: RegisterSpace },
+        // };
+    }
+}
+pub fn printDisasm(instr: u64, out: anytype) @TypeOf(out).Error!void {
+    // std.io.bitReader
+
+    var fbs = std.io.fixedBufferStream(&std.mem.toBytes(instr));
+    const fbs_reader = fbs.reader();
+    var bitr = std.io.bitReader(comptime std.Target.current.cpu.arch.endian(), fbs_reader);
+
+    const opcode = bitr.readBitsNoEof(u8, 8) catch unreachable;
+
+    const opcode_enum = std.meta.intToEnum(InstructionID, opcode) catch |e| {
+        try out.print("«Bad Opcode» {x:0>8}\n", .{instr});
+        return;
+    };
+    const opcode_name = std.meta.tagName(opcode_enum);
+    const instr_args: InstrInfo.InstructionSpec = InstrInfo.instructions.get(opcode_name) orelse {
+        try out.print("{s} «TODO {x:0>8}»\n", .{ opcode_name, instr });
+        return;
+    };
+    var offset: u8 = 0;
+    // std.io.bitReader
+    // std.io.bitReader
+    try out.print("{s}", .{opcode_name});
+    for (instr_args.args) |arg| {
+        printArgDisasm(arg, &bitr, out) catch |e| {
+            try out.print(" «ERROR {x:0>8}»", .{instr});
+            break;
+        };
+    }
+    try out.print("\n", .{});
+}
+
+// TODO the plan
+// no register allocator
+// instead, you specify what register a label is on
+// and it will error if you try to use the same register twice
+// that doesn't allow for fun stuff like intermediate values though unfortunately
+// oh, intermediate values can specify a register too and we can check that it's valid
+
 pub fn mainMain() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer std.testing.expect(!gpa.deinit());
+    defer std.debug.assert(!gpa.deinit());
     const alloc = &gpa.allocator;
 
     // 0: read the file
@@ -1533,6 +1640,13 @@ pub fn mainMain() !void {
         const stdout = std.io.getStdOut().writer();
         try stdout.writeAll("// Codegen:\n");
         for (res_code) |item| try stdout.print("{b:0>64}\n", .{item});
+        try stdout.writeAll("\n");
+    }
+
+    if (true) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.writeAll("// Disasm:\n");
+        for (res_code) |item| try printDisasm(item, stdout);
         try stdout.writeAll("\n");
     }
 
