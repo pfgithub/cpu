@@ -16,6 +16,12 @@ pub fn build(b: *Builder) void {
             exe.step.dependOn(&runner.step);
             exe.addPackagePath("logic", pkgfile);
         }
+        {
+            const asmfile = "src/asm.asm";
+            const binfile = "src/asm.bin";
+            const runner = b.addSystemCommand(&[_][]const u8{ "zig", "run", "src/asm.zig", "--", asmfile, binfile });
+            exe.step.dependOn(&runner.step);
+        }
         exe.install();
 
         const run_cmd = exe.run();

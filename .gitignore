@@ -3,3 +3,4 @@ deno
 node_modules/
 dist/
 asm.bin
+zig-out/

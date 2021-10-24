@@ -125,10 +125,10 @@ const PinsParser = struct {
 
     pub fn next(parser: *PinsParser) ?Pin {
         const line = parser.takeLine() orelse return null;
-        var split = std.mem.split(line, "\t");
-        defer std.testing.expectEqual(split.next(), null); // error means extra values
+        var split = std.mem.split(u8, line, "\t");
+        defer std.debug.assert(split.next() == null); // error means extra values
         const id = split.next() orelse unreachable; // error means logic.txt is bad.
-        std.testing.expectEqual(id.len, 1);
+        std.debug.assert(id.len == 1);
         return switch (id[0]) {
             'i' => Pin{
                 .in = .{ .name = split.next() orelse unreachable },
@@ -234,14 +234,14 @@ const LogicExecutor = struct {
                         return error.BadInputType;
                     };
                     const v = try input_kind_seen_count.getOrPut(input_type);
-                    if (!v.found_existing) v.entry.value = 0 else {
-                        if (v.entry.value == std.math.maxInt(IOShiftSize)) {
+                    if (!v.found_existing) v.value_ptr.* = 0 else {
+                        if (v.value_ptr.* == std.math.maxInt(IOShiftSize)) {
                             std.log.emerg("More than {} inputs named {}", .{ std.math.maxInt(IOShiftSize), input_type });
                             @panic("crash");
                         }
-                        v.entry.value += 1;
+                        v.value_ptr.* += 1;
                     }
-                    break :blk .{ .input = .{ .input_type = input_type, .input_index = v.entry.value } };
+                    break :blk .{ .input = .{ .input_type = input_type, .input_index = v.value_ptr.* } };
                 },
                 .out => |out| blk: {
                     const output_type = std.meta.stringToEnum(OutputType, out.name) orelse {
@@ -249,17 +249,17 @@ const LogicExecutor = struct {
                         return error.BadInputType;
                     };
                     const v = try output_kind_seen_count.getOrPut(output_type);
-                    if (!v.found_existing) v.entry.value = 0 else {
-                        if (v.entry.value == std.math.maxInt(IOShiftSize)) {
+                    if (!v.found_existing) v.value_ptr.* = 0 else {
+                        if (v.value_ptr.* == std.math.maxInt(IOShiftSize)) {
                             std.log.emerg("More than {} outputs named {}", .{ std.math.maxInt(IOShiftSize), output_type });
                             @panic("crash");
                         }
-                        v.entry.value += 1;
+                        v.value_ptr.* += 1;
                     }
                     const index = outputs_al.items.len;
                     try outputs_al.append(Output{
                         .output_type = output_type,
-                        .output_index = v.entry.value,
+                        .output_index = v.value_ptr.*,
                         .dep = @intToEnum(PinIndex, out.dep),
                         .value = undefined,
                     });
@@ -359,7 +359,7 @@ pub fn range(max: usize) []const void {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer std.testing.expect(!gpa.deinit());
+    defer std.debug.assert(!gpa.deinit());
     const alloc = &gpa.allocator;
 
     var timer = try std.time.Timer.start();

@@ -223,7 +223,7 @@ const AstExpr = struct {
                 }) {
                     _ = ts.take();
                 }
-                const num = std.fmt.parseInt(u8, ts.string[num_start..ts.index], 10) catch |e|
+                const num = std.fmt.parseInt(u8, ts.string[num_start..ts.index], 10) catch
                     return parseError(data, num_start, "number too big") //
                 ;
                 if (!ts.startsWithTake("x")) return parseError(data, ts.index, "expected 'x' eg [8x 0d12]");
@@ -252,11 +252,11 @@ const AstExpr = struct {
         }
         if (ts.startsWithTake("'")) {
             var si = ts.index;
-            const byte_len = std.unicode.utf8ByteSequenceLength(ts.peek()) catch |e| return parseError(data, ts.index, "invalid utf-8 codepoint");
+            const byte_len = std.unicode.utf8ByteSequenceLength(ts.peek()) catch return parseError(data, ts.index, "invalid utf-8 codepoint");
             if (si + byte_len > ts.string.len) return parseError(data, ts.index, "invalid utf-8 codepoint");
             const byte_buf = ts.string[si .. si + byte_len];
             ts.index += byte_buf.len;
-            const value = std.unicode.utf8Decode(byte_buf) catch |e| return parseError(data, ts.index, "invalid utf-8 codepoint");
+            const value = std.unicode.utf8Decode(byte_buf) catch return parseError(data, ts.index, "invalid utf-8 codepoint");
             if (!ts.startsWithTake("'")) return parseError(data, ts.index, "Expected at most one utf-8 codepoint, eg '…'");
             const end_index = ts.index;
             eatWhitespace(ts);
@@ -451,7 +451,9 @@ const Data = struct {
     const Error = struct {
         start: usize,
         msg: []const u8,
-        pub fn deinit(me: Error) void {}
+        pub fn deinit(me: Error) void {
+            _ = me;
+        }
     };
     err: ?Error,
     ts: TokenStream,
@@ -467,6 +469,8 @@ pub fn unicodeColumnLen(text: []const u8) usize {
 const Indent = struct {
     count: usize = 0,
     pub fn format(idw: Indent, comptime fmt: []const u8, options: std.fmt.FormatOptions, out: anytype) !void {
+        _ = fmt;
+        _ = options;
         for (range(idw.count)) |_| {
             try out.writeAll("    ");
         }
@@ -660,7 +664,9 @@ const IrgenData = struct {
     const Error = struct {
         src: Src,
         msg: []const u8,
-        pub fn deinit(me: Error) void {}
+        pub fn deinit(me: Error) void {
+            _ = me;
+        }
     };
     err: ?Error, // this can just be : Error = undefined // nevermind it can't
     out_block: *std.ArrayList(IR_Instruction),
@@ -690,10 +696,10 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) Irg
     // 1: find and predefine labels
 
     for (outer_block) |decl| switch (decl.value) {
-        .exec => |exec| {},
+        .exec => {},
         .block => {},
         .label => |label| {
-            if (scope.getLabel(label.name)) |prev_label| {
+            if (scope.getLabel(label.name)) |_| {
                 const res = irgenError(data, decl.src, "redefinition of label. TODO note previous definition.");
                 return res;
             }
@@ -776,31 +782,31 @@ const InstructionMaxArgsCount = 4;
 
 // zig fmt: off
 const MultilineInstructionsHack = struct {
-    usingnamespace InstrInfo;
+    const i = InstrInfo;
     pub const Instructions = .{
         // register allocator doesn't care where the target is.
         // for the purpose of register allocator control flow, this
         // instruction is completely normal other than clearing a few
         // registers after being called
-        .{ "call", instr(.jal, &[_]ArgSpec{
-            constant(u4, @enumToInt(SystemRegister.pc)), // base
-            rawReg("ret_addr", .normal), // ←ret_addr // this is *not* an out register. it's not `#ra = (call …)`.
-            immediate("jump_target", i48), // offset
-            savedRegsBitfield("saved_regs", .normal),
+        .{ "call", i.instr(.jal, &[_]i.ArgSpec{
+            i.constant(u4, @enumToInt(SystemRegister.pc)), // base
+            i.rawReg("ret_addr", .normal), // ←ret_addr // this is *not* an out register. it's not `#ra = (call …)`.
+            i.immediate("jump_target", i48), // offset
+            i.savedRegsBitfield("saved_regs", .normal),
         }, .next) },
 
         // register allocator follows this control flow
-        .{ "jump", instr(.jal, &[_]ArgSpec{
-            constant(u4, @enumToInt(SystemRegister.pc)), // base
-            constant(u4, @enumToInt(SystemRegister.pc)), // ←ret_addr (voided)
-            immediateTarget("jump_target", i48) // offset
+        .{ "jump", i.instr(.jal, &[_]i.ArgSpec{
+            i.constant(u4, @enumToInt(SystemRegister.pc)), // base
+            i.constant(u4, @enumToInt(SystemRegister.pc)), // ←ret_addr (voided)
+            i.immediateTarget("jump_target", i48) // offset
         }, .target), },
 
         // for the purposes of register allocation, this is equivalent to "halt"
-        .{ "ret", instr(.jal, &[_]ArgSpec{
-            reg("jump_target", .normal), // base
-            constant(u4, @enumToInt(SystemRegister.pc)), // ←ret_addr (voided)
-            constant(i48, 0) // offset
+        .{ "ret", i.instr(.jal, &[_]i.ArgSpec{
+            i.reg("jump_target", .normal), // base
+            i.constant(u4, @enumToInt(SystemRegister.pc)), // ←ret_addr (voided)
+            i.constant(i48, 0) // offset
         }, .none) },
         
         // "someconditionaljump" (targetImmediate(…)), .either
@@ -921,7 +927,7 @@ const InstrInfo = struct {
 };
 
 pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr) IrgenError!SystemRegister {
-    const out_block = data.out_block;
+    _ = scope;
 
     switch (expr.value) {
         .reg => |rg| {
@@ -936,15 +942,13 @@ pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr) IrgenError!Sy
 }
 
 pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr) IrgenError!VariableDefinition {
-    const out_block = data.out_block;
-
     switch (expr.value) {
         .variable => |vbl| {
             return scope.getVariable(vbl.name) orelse {
                 return irgenError(data, expr.src, "Variable not found");
             };
         },
-        .reg => |rg| {
+        .reg => {
             // this space thing isn't very well thought out because I'm not actually using it
             // I think 'scope' has to be a property of the SystemRegister or something idk
             if (space != .normal) return irgenError(data, expr.src, "Trying to fit non-normal register into normal slot");
@@ -1060,7 +1064,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             .src = arg.src,
                         };
                     },
-                    .out => |out| blk: {
+                    .out => blk: {
                         const oreg = out_reg orelse {
                             return irgenError(data, expr.src, "Return value is ignored");
                         };
@@ -1082,7 +1086,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             .src = arg.src,
                         };
                     },
-                    .raw_reg => |rreg| blk: {
+                    .raw_reg => blk: {
                         const arg = args.next() orelse {
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
@@ -1104,7 +1108,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                             .src = arg.src,
                         };
                     },
-                    .saved_regs_bitfield => |srbf| blk: {
+                    .saved_regs_bitfield => blk: {
                         var bitfield_value: u15 = 0;
                         while (args.next()) |arg| {
                             const sys_reg = try irgenSysReg(data, scope, arg);
@@ -1135,7 +1139,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                 },
             });
         },
-        .variable => |varbl| {
+        .variable => {
             return irgenError(data, expr.src, "A register doesn't fit here.");
         },
         .label_ref => {
@@ -1174,26 +1178,24 @@ fn runtimeBitcast(num: i64, width: u8, signed: bool) ?u64 {
 }
 
 test "" {
-    std.testing.expectEqual(runtimeBitcast(25, 8, false), 25);
-    std.testing.expectEqual(runtimeBitcast(-25, 8, false), null);
-    std.testing.expectEqual(runtimeBitcast(255, 8, false), 255);
-    std.testing.expectEqual(runtimeBitcast(255, 8, true), null);
-    std.testing.expectEqual(runtimeBitcast(127, 8, true), 127);
-    std.testing.expectEqual(runtimeBitcast(128, 8, true), null);
-    std.testing.expectEqual(runtimeBitcast(-128, 8, true), @bitCast(u8, @as(i8, -128)));
-    std.testing.expectEqual(runtimeBitcast(-129, 8, false), null);
-    std.testing.expectEqual(runtimeBitcast(-129, 9, true), @bitCast(u9, @as(i9, -129)));
+    try std.testing.expectEqual(runtimeBitcast(25, 8, false), 25);
+    try std.testing.expectEqual(runtimeBitcast(-25, 8, false), null);
+    try std.testing.expectEqual(runtimeBitcast(255, 8, false), 255);
+    try std.testing.expectEqual(runtimeBitcast(255, 8, true), null);
+    try std.testing.expectEqual(runtimeBitcast(127, 8, true), 127);
+    try std.testing.expectEqual(runtimeBitcast(128, 8, true), null);
+    try std.testing.expectEqual(runtimeBitcast(-128, 8, true), @bitCast(u8, @as(i8, -128)));
+    try std.testing.expectEqual(runtimeBitcast(-129, 8, false), null);
+    try std.testing.expectEqual(runtimeBitcast(-129, 9, true), @bitCast(u9, @as(i9, -129)));
 }
 
 // OutWidth: std.meta.Int(…, …)
 pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: u8, signed: bool, expr: AstExpr) IrgenError!ImmediateValue {
-    const out_block = data.out_block;
-
     switch (expr.value) {
-        .instruction => |instr| {
+        .instruction => {
             return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
         },
-        .variable => |instr| {
+        .variable => {
             return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
         },
         .label_ref => |lbl_ref| {
@@ -1206,7 +1208,7 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: u8, signed: bool, 
                 },
             };
         },
-        .reg => |lbl_ref| {
+        .reg => {
             return irgenError(data, expr.src, "A register doesn't fit here. This slot is for an immediate value.");
         },
         .number => |num| {
@@ -1230,7 +1232,7 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: u8, signed: bool, 
 
                 res_int |= std.math.shl(u64, immediate_value.value.constant, total_w);
                 // std.math.add for overflow protection
-                total_w = std.math.add(u8, total_w, component.width) catch |e| return irgenError(data, component.value.src, "Total width too big");
+                total_w = std.math.add(u8, total_w, component.width) catch return irgenError(data, component.value.src, "Total width too big");
                 if (total_w > width) return irgenError(data, expr.src, "Total too wide for slot");
             }
             return ImmediateValue{
@@ -1444,15 +1446,15 @@ fn printArgDisasm(arg: InstrInfo.ArgSpec, bitr: anytype, out: anytype) !void {
             // can I use a std.io.bitReader for this?
             // yeah I think so
         },
-        .reg => |reg| {
+        .reg => {
             const reg_id = try bitr.readBitsNoEof(u4, 4);
             try out.print(" #{s}", .{@tagName(@intToEnum(SystemRegister, reg_id))});
         },
-        .raw_reg => |reg| {
+        .raw_reg => {
             const reg_id = try bitr.readBitsNoEof(u4, 4);
             try out.print(" #{s}", .{@tagName(@intToEnum(SystemRegister, reg_id))});
         },
-        .out => |outr| {
+        .out => {
             const reg_id = try bitr.readBitsNoEof(u4, 4);
             try out.print(" →#{s}", .{@tagName(@intToEnum(SystemRegister, reg_id))});
         },
@@ -1478,7 +1480,7 @@ fn printArgDisasm(arg: InstrInfo.ArgSpec, bitr: anytype, out: anytype) !void {
             }
             try out.print(" →:{d}", .{imm_s});
         },
-        .saved_regs_bitfield => |srbf| {
+        .saved_regs_bitfield => {
             try out.print(" «TODO saved regs»", .{});
         },
         // pub const ArgSpec = union(enum) {
@@ -1507,7 +1509,7 @@ pub fn printDisasm(instr: u64, out: anytype) @TypeOf(out).Error!void {
 
     const opcode = bitr.readBitsNoEof(u8, 8) catch unreachable;
 
-    const opcode_enum = std.meta.intToEnum(InstructionID, opcode) catch |e| {
+    const opcode_enum = std.meta.intToEnum(InstructionID, opcode) catch {
         try out.print("«Bad Opcode» {x:0>8}\n", .{instr});
         return;
     };
@@ -1516,12 +1518,12 @@ pub fn printDisasm(instr: u64, out: anytype) @TypeOf(out).Error!void {
         try out.print("{s} «TODO {x:0>8}»\n", .{ opcode_name, instr });
         return;
     };
-    var offset: u8 = 0;
+    // var offset: u8 = 0;
     // std.io.bitReader
     // std.io.bitReader
     try out.print("{s}", .{opcode_name});
     for (instr_args.args) |arg| {
-        printArgDisasm(arg, &bitr, out) catch |e| {
+        printArgDisasm(arg, &bitr, out) catch {
             try out.print(" «ERROR {x:0>8}»", .{instr});
             break;
         };
