@@ -22,6 +22,14 @@ pub fn build(b: *Builder) void {
             const runner = b.addSystemCommand(&[_][]const u8{ "zig", "run", "src/asm.zig", "--", asmfile, binfile });
             exe.step.dependOn(&runner.step);
         }
+        {
+            const test_step = b.addTest("src/logic_emulator.zig");
+            exe.step.dependOn(&test_step.step);
+        }
+        {
+            const test_step = b.addTest("src/asm.zig");
+            exe.step.dependOn(&test_step.step);
+        }
         exe.install();
 
         const run_cmd = exe.run();
