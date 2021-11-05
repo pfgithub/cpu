@@ -989,7 +989,8 @@ pub const OutputConstraint = struct {
     vbl: ?usize = null,
     pub fn constrain(this: OutputConstraint, add: OutputConstraint) !OutputConstraint {
         if(add.reg != null and this.reg != null) return error.DoubleReg;
-        if(add.vbl != null and this.vbl != null) return error.DoubleVar;
+        // if(add.vbl != null and this.vbl != null) return error.DoubleVar; // this only matters
+        // if this's variable is named.
 
         return OutputConstraint{
             .reg = add.reg orelse this.reg,
@@ -1044,9 +1045,12 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, expr: AstExpr, out: Ou
                         const arg = args.next() orelse {
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
+                        const constraint = OutputConstraint{
+                            .vbl = nextID(),
+                        };
                         break :blk Arg{
                             .value = .{
-                                .register = try irgenIntermediate(data, scope, arg, OutputConstraint{}),
+                                .register = try irgenIntermediate(data, scope, arg, constraint),
                             },
                             .src = arg.src,
                         };
