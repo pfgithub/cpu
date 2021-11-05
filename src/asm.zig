@@ -141,6 +141,10 @@ const AstExpr = struct {
         variable: struct {
             name: []const u8,
         },
+        outreg: struct {
+            reg: []const u8,
+            expr: *AstExpr,
+        },
         label_ref: struct {
             name: []const u8,
         },
@@ -158,6 +162,10 @@ const AstExpr = struct {
                 alloc.free(instr.args);
             },
             .variable => {},
+            .outreg => |outreg| {
+                outreg.expr.deinit(alloc);
+                alloc.destroy(outreg.expr);
+            },
             .label_ref => {},
             .reg => {},
             .number => {},
@@ -194,7 +202,7 @@ const AstExpr = struct {
                 .value = .{ .label_ref = .{ .name = id } },
             };
         }
-        if (ts.startsWithTake(".")) {
+        if (ts.startsWithTake("#")) {
             const id = readID(ts) orelse return parseError(data, start_index, "expected `#reg_name`");
             const end_index = ts.index;
             eatWhitespace(ts);
@@ -276,14 +284,32 @@ const AstExpr = struct {
 
         const id_opt = readID(ts);
         const after_id = ts.index;
-        eatWhitespace(ts);
 
         if (id_opt) |id| {
+            if(ts.startsWithTake(".")) {
+                var expr_dupe = try alloc.create(AstExpr);
+                errdefer alloc.destroy(expr_dupe);
+
+                expr_dupe.* = try parse(alloc, data);
+                errdefer expr_dupe.deinit(alloc);
+
+                return AstExpr{
+                    .value = .{ .outreg = .{ .reg = id, .expr = expr_dupe } },
+                    .src = .{ .start = start_index, .end = after_id },
+                };
+            }
+
+            eatWhitespace(ts);
+
             return AstExpr{
                 .value = .{ .variable = .{ .name = id } },
                 .src = .{ .start = start_index, .end = after_id },
             };
-        } else switch (ts.peek()) {
+        }
+
+        eatWhitespace(ts);
+    
+        switch (ts.peek()) {
             '(' => {
                 _ = ts.take();
                 eatWhitespace(ts);
@@ -363,8 +389,8 @@ const AstDecl = struct {
         const start_index = ts.index;
         errdefer ts.index = start_index;
 
-        const swhash = ts.startsWithTake(".");
-        const id_opt = readID(ts);
+        const swhash = ts.startsWithTake("#");
+        var id_opt = readID(ts);
         if (id_opt == null) ts.index = start_index;
 
         eatWhitespace(ts);
@@ -385,7 +411,9 @@ const AstDecl = struct {
                 eatWhitespace(ts);
                 break :continu;
             }
-            return parseError(data, ts.index, "expected `=` or `:`");
+            // return parseError(data, ts.index, "expected `=` or `:`");
+            id_opt = null;
+            ts.index = start_index;
         } else switch (ts.peek()) {
             '{' => {
                 // block decl
@@ -517,6 +545,10 @@ pub fn printAstExpr(ast: AstExpr, out: anytype, indent: Indent) @TypeOf(out).Err
         },
         .variable => |varb| {
             try out.print("{s}", .{varb.name});
+        },
+        .outreg => |outreg| {
+            try out.print("{s}.", .{outreg.reg});
+            try printAstExpr(outreg.expr.*, out, indent);
         },
         .label_ref => |lrf| {
             try out.print(":{s}", .{lrf.name});
@@ -744,7 +776,19 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) Irg
                 };
             };
 
-            try irgenReg(data, scope, out_var, exec.expr.*);
+            const out_reg = try irgenIntermediate(data, scope, .normal, exec.expr.*);
+
+            if(out_var) |ovar| {
+                try out_block.append(IR_Instruction{
+                    .src = exec.expr.src,
+                    .value = .{
+                        .set_same = .{
+                            .store_into = ovar,
+                            .store_from = out_reg,
+                        },
+                    },
+                });
+            }
         },
         .block => |block| {
             try irgen(data, scope, block.decls);
@@ -764,6 +808,10 @@ const IR_Instruction = struct {
             next: CfMode,
         },
         raw_value: u64,
+        set_same: struct {
+            store_into: VariableDefinition,
+            store_from: VariableDefinition,
+        },
     },
     src: Src,
 };
@@ -829,7 +877,7 @@ const InstrInfo = struct {
         .{ "load", instr(.load, &[_]ArgSpec{ reg("addr", .normal), out(.normal), constant(u48, 0) }, .next) },
         .{ "store", instr(.store, &[_]ArgSpec{ reg("addr", .normal), reg("value", .normal), constant(u48, 0) }, .next) },
         .{ "halt", instr(.halt, &[_]ArgSpec{constant(u56, 0)}, .none) },
-        .{ "write", instr(.write, &[_]ArgSpec{ reg("value", .normal), constant(u52, 0) }, .none) },
+        .{ "write", instr(.write, &[_]ArgSpec{ reg("value", .normal), constant(u52, 0) }, .next) },
     } ++ MultilineInstructionsHack.Instructions);
 
     pub const ArgSpec = union(enum) {
@@ -958,6 +1006,19 @@ pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, 
                 },
                 .space = .normal,
             };
+        },
+        .outreg => |outreg| {
+            const vardef = VariableDefinition{
+                .value = .{
+                    .allocated = std.meta.stringToEnum(SystemRegister, outreg.reg) orelse {
+                        return irgenError(data, expr.src, "No register with this name exists");
+                    },
+                },
+                .space = .normal,
+            };
+
+            try irgenReg(data, scope, vardef, outreg.expr.*);
+            return vardef;
         },
         else => {
             var slot: VariableDefinition = .{
@@ -1142,6 +1203,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
         .variable => {
             return irgenError(data, expr.src, "A register doesn't fit here.");
         },
+        .outreg => unreachable, // shouldn't happen
         .label_ref => {
             return irgenError(data, expr.src, "An immediate value doesn't fit here.");
         },
@@ -1198,6 +1260,9 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: u8, signed: bool, 
         .variable => {
             return irgenError(data, expr.src, "An instruction doesn't fit here. This slot is for an immediate value.");
         },
+        .outreg => {
+            return irgenError(data, expr.src, "A register doesn't fit here. This slot is for an immediate value.");
+        },
         .label_ref => |lbl_ref| {
             return ImmediateValue{
                 .width = width,
@@ -1243,15 +1308,16 @@ pub fn irgenImmediate(data: *IrgenData, scope: *Scope, width: u8, signed: bool, 
     }
 }
 
-pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void {
-    const epos = start;
-    const out = std.io.getStdErr().writer();
-
+pub fn getErrPos(start: usize, code: []const u8) struct {
+    lyn: usize,
+    col: usize,
+    lyn_start: usize,
+} {
     var lyn: usize = 0;
     var col: usize = 0;
     var latestLine: usize = 0;
     for (code) |char, i| {
-        if (epos == i) break;
+        if (start == i) break;
         col += 1;
         if (char == '\n') {
             lyn += 1;
@@ -1259,7 +1325,18 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
             latestLine = i + 1;
         }
     }
-    var lineText = std.mem.span(@ptrCast([*:'\n']const u8, &code[latestLine]));
+
+    return .{.lyn = lyn, .col = col, .lyn_start = latestLine};
+}
+
+pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void {
+    const out = std.io.getStdErr().writer();
+
+    const start_pos = getErrPos(start, code);
+    const lyn = start_pos.lyn;
+    const col = start_pos.col;
+
+    var lineText = std.mem.span(@ptrCast([*:'\n']const u8, &code[start_pos.lyn_start]));
 
     try out.print(
         //{bold+brwhite}./file:{bold+brblue}{}{bold+brwhite}:{bold+brblue}{}{bold+brwhite}: {bold+red}error: {bold+white}{s}{reset}
@@ -1277,7 +1354,7 @@ pub fn printReportedError(start: usize, msg: []const u8, code: []const u8) !void
 }
 
 pub fn printIrSysReg(reg: SystemRegister, out: anytype) @TypeOf(out).Error!void {
-    try out.writeAll(".");
+    try out.writeAll("#");
     try out.writeAll(std.meta.tagName(reg));
 }
 pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void {
@@ -1325,7 +1402,7 @@ pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
     }
 }
 
-pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
+pub fn printIrLine(item: IR_Instruction, code: []const u8, out: anytype) @TypeOf(out).Error!void {
     // TODO print labels
     switch (item.value) {
         .standard_instr => |instr| {
@@ -1335,14 +1412,31 @@ pub fn printIrLine(item: IR_Instruction, out: anytype) @TypeOf(out).Error!void {
                 .next => "↓",
                 .either => "↘",
             };
-            try out.print("{s} {s}", .{ nextname, std.meta.tagName(instr.instr_id) });
+
+            const pos = getErrPos(item.src.start, code);
+
+            //{bold+brwhite}./file:{bold+brblue}{}{bold+brwhite}:{bold+brblue}{}{reset}
+            //\x1b[1m\x1b[97m./file:\x1b[94m{}\x1b[97m\x1b(B\x1b[m
+            try out.print("{s} \x1b[1m\x1b[97m./file:\x1b[94m{}\x1b[97m:\x1b[94m{}\x1b(B\x1b[m {s}", .{
+                nextname,
+                pos.lyn + 1,
+                pos.col + 1,
+                std.meta.tagName(instr.instr_id),
+            });
             for (instr.args) |arg| {
                 try printIrArg(arg, out);
             }
             try out.writeByte('\n');
         },
         .raw_value => |raval| {
-            try out.print("{b}\n", .{raval});
+            try out.print("? {b}\n", .{raval});
+        },
+        .set_same => |ss| {
+            try out.print("↓ assert ", .{});
+            try printIrReg(ss.store_into, out);
+            try out.print(" ←", .{});
+            try printIrReg(ss.store_from, out);
+            try out.print("\n", .{});
         },
     }
 }
@@ -1428,6 +1522,7 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
             if (offset != 64) unreachable;
             return res;
         },
+        .set_same => unreachable, // should be handled before codegen
     }
 }
 
@@ -1587,7 +1682,7 @@ pub fn mainMain() !void {
         try stdout.writeAll("\n");
     }
 
-    // 2: transform the ast → unallocated ir
+    // 2: transform the ast → unresolved ir
     var unallocated = std.ArrayList(IR_Instruction).init(alloc);
     defer unallocated.deinit();
 
@@ -1610,6 +1705,14 @@ pub fn mainMain() !void {
         IrgenError.OutOfMemory => return e,
     };
 
+    if (true) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.writeAll("// Unresolved IR:\n");
+        for (unallocated.items) |item| try printIrLine(item, file_cont, stdout);
+        try stdout.writeAll("\n");
+    }
+
+    // 2: transform the unresolved ir → resolved ir
     resolveLabels(&irgen_data) catch |e| switch (e) {
         IrgenError.IrgenError => {
             const err_data = irgen_data.err.?;
@@ -1620,12 +1723,12 @@ pub fn mainMain() !void {
 
     if (true) {
         const stdout = std.io.getStdOut().writer();
-        try stdout.writeAll("// IR:\n");
-        for (unallocated.items) |item| try printIrLine(item, stdout);
+        try stdout.writeAll("// Resolved IR:\n");
+        for (unallocated.items) |item| try printIrLine(item, file_cont, stdout);
         try stdout.writeAll("\n");
     }
 
-    // 3: transform the unallocated ir → machine code
+    // 3: transform the resolved ir → machine code
     var res_code = try alloc.alloc(u64, unallocated.items.len);
     defer alloc.free(res_code);
 
