@@ -583,9 +583,9 @@ const ImmediateValue = struct {
 };
 const Arg = struct {
     value: union(enum) {
-        register: VariableDefinition,
+        register: OutputConstraint,
         immediate: ImmediateValue,
-        out_reg: VariableDefinition,
+        out_reg: OutputConstraint,
         cleared_regs_bitfield: u15,
         raw_reg: SystemRegister,
         immediate_target: ImmediateValue,
@@ -748,10 +748,17 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) Irg
 
     for (outer_block) |decl| switch (decl.value) {
         .exec => |exec| {
-            const out_var: ?VariableDefinition = blk: { // this control flow is a bit messy and confusing
-                const ovname = exec.out_var orelse break :blk null;
+            const constraint: OutputConstraint = blk: { // this control flow is a bit messy and confusing
+                const ovname = exec.out_var orelse break :blk OutputConstraint{};
                 break :blk switch (ovname) {
-                    .variable => |vbl| break :blk scope.getVariable(vbl) orelse {
+                    .variable => |vbl| {
+                        if(scope.getVariable(vbl)) |vardef| return {
+                            if(vardef.value != .unallocated) unreachable; // shouldn't happen in this stage
+                            break :blk OutputConstraint{
+                                .vbl = vardef.value.unallocated.id,
+                            };
+                        };
+
                         const vardef = VariableDefinition{
                             .value = .{
                                 .unallocated = .{
@@ -762,33 +769,21 @@ pub fn irgen(data: *IrgenData, parent_scope: *Scope, outer_block: []AstDecl) Irg
                             .space = .normal,
                         };
                         try scope.defVariable(vbl, vardef);
-                        break :blk vardef;
+                        break :blk OutputConstraint{
+                            .vbl = vardef.value.unallocated.id,
+                        };
                     },
-                    .reg => |rg| VariableDefinition{
-                        .space = .normal,
-                        .value = .{
-                            .allocated = std.meta.stringToEnum(SystemRegister, rg) orelse {
-                                // TODO exec.out_var_src?
-                                return irgenError(data, decl.src, "No register with this name exists");
-                            },
+                    .reg => |rg| OutputConstraint{
+                        .reg = std.meta.stringToEnum(SystemRegister, rg) orelse {
+                            // TODO exec.out_var_src?
+                            return irgenError(data, decl.src, "No register with this name exists");
                         },
                     },
                 };
             };
 
-            const out_reg = try irgenIntermediate(data, scope, .normal, exec.expr.*);
-
-            if(out_var) |ovar| {
-                try out_block.append(IR_Instruction{
-                    .src = exec.expr.src,
-                    .value = .{
-                        .set_same = .{
-                            .store_into = ovar,
-                            .store_from = out_reg,
-                        },
-                    },
-                });
-            }
+            _ = try irgenIntermediate(data, scope, exec.expr.*, constraint);
+            // we don't care what the final constraint is
         },
         .block => |block| {
             try irgen(data, scope, block.decls);
@@ -808,10 +803,6 @@ const IR_Instruction = struct {
             next: CfMode,
         },
         raw_value: u64,
-        set_same: struct {
-            store_into: VariableDefinition,
-            store_from: VariableDefinition,
-        },
     },
     src: Src,
 };
@@ -989,52 +980,23 @@ pub fn irgenSysReg(data: *IrgenData, scope: *Scope, expr: AstExpr) IrgenError!Sy
     }
 }
 
-pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, space: RegisterSpace, expr: AstExpr) IrgenError!VariableDefinition {
-    switch (expr.value) {
-        .variable => |vbl| {
-            return scope.getVariable(vbl.name) orelse {
-                return irgenError(data, expr.src, "Variable not found");
-            };
-        },
-        .reg => {
-            // this space thing isn't very well thought out because I'm not actually using it
-            // I think 'scope' has to be a property of the SystemRegister or something idk
-            if (space != .normal) return irgenError(data, expr.src, "Trying to fit non-normal register into normal slot");
-            return VariableDefinition{
-                .value = .{
-                    .allocated = try irgenSysReg(data, scope, expr),
-                },
-                .space = .normal,
-            };
-        },
-        .outreg => |outreg| {
-            const vardef = VariableDefinition{
-                .value = .{
-                    .allocated = std.meta.stringToEnum(SystemRegister, outreg.reg) orelse {
-                        return irgenError(data, expr.src, "No register with this name exists");
-                    },
-                },
-                .space = .normal,
-            };
+pub const OutputConstraint = struct {
+    // this is where Space should go I think. it's a constraint on the allowed
+    //      output. eg space: ?RegisterSpace and also reg: ?SystemRegister would
+    //      be changed to reg: ?u8. actually, reg should only be not null if space
+    //      is not null so it might be better to use a union enum there or something
+    reg: ?SystemRegister = null,
+    vbl: ?usize = null,
+    pub fn constrain(this: OutputConstraint, add: OutputConstraint) !OutputConstraint {
+        if(add.reg != null and this.reg != null) return error.DoubleReg;
+        if(add.vbl != null and this.vbl != null) return error.DoubleVar;
 
-            try irgenReg(data, scope, vardef, outreg.expr.*);
-            return vardef;
-        },
-        else => {
-            var slot: VariableDefinition = .{
-                .value = .{
-                    .unallocated = .{
-                        .definition_src = expr.src, // TODO exec.out_var_src?
-                        .id = nextID(),
-                    },
-                },
-                .space = space,
-            };
-            try irgenReg(data, scope, slot, expr);
-            return slot;
-        },
+        return OutputConstraint{
+            .reg = add.reg orelse this.reg,
+            .vbl = add.vbl orelse this.vbl,
+        };
     }
-}
+};
 
 fn SliceIterator(comptime SliceType: type) type {
     return struct {
@@ -1054,49 +1016,13 @@ fn sliceIterator(slice: anytype) SliceIterator(@TypeOf(slice)) {
     return ResType{ .slice = slice };
 }
 
-pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, expr: AstExpr) IrgenError!void {
-    const out_block = data.out_block;
-
-    // instruction: struct {
-    //     name: []const u8,
-    //     args: []AstExpr,
-    // },
-    // variable: struct {
-    //     name: []const u8,
-    // },
-    // label_ref: struct {
-    //     name: []const u8,
-    // },
+pub fn irgenIntermediate(data: *IrgenData, scope: *Scope, expr: AstExpr, out: OutputConstraint) IrgenError!OutputConstraint {
     switch (expr.value) {
         .instruction => |instr| {
             const spec: InstrInfo.InstructionSpec = InstrInfo.instructions.get(instr.name) orelse {
                 return irgenError(data, expr.src, "No instruction exists with this name"); // TODO instr.name_src?
             };
-            // const Arg = union(enum) {
-            //     none: void,
-            //     register: VariableDefinition,
-            //     immediate: struct {
-            //         width: std.math.Log2Int(u64),
-            //         value: u64,
-            //     },
-            //     out_reg: VariableDefinition,
-            // };
 
-            // const IR_Instruction = struct {
-            //     value: union(enum) {
-            //         // normal instruction sets have a few standard instruction types
-            //         // this doesn't really so all instructions must be able to fit in here
-            //         standard_instr: struct {
-            //             instr_id: InstructionID,
-            //             args: [InstructionMaxArgsCount]Arg,
-            //         },
-            //         jump_label: LabelDefinition,
-            //         // jmp_instr
-            //     },
-            //     src: Src,
-            // };
-
-            // create an iterator over instr.args
             var args = sliceIterator(instr.args);
 
             var res_args: [InstructionMaxArgsCount]Arg = [_]Arg{undefined} ** InstructionMaxArgsCount;
@@ -1114,24 +1040,31 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                         },
                         .src = expr.src,
                     },
-                    .reg => |reg| blk: {
+                    .reg => blk: {
                         const arg = args.next() orelse {
                             return irgenError(data, expr.src, "Not enough arguments.");
                         };
                         break :blk Arg{
                             .value = .{
-                                .register = try irgenIntermediate(data, scope, reg.space, arg),
+                                .register = try irgenIntermediate(data, scope, arg, OutputConstraint{}),
                             },
                             .src = arg.src,
                         };
                     },
                     .out => blk: {
-                        const oreg = out_reg orelse {
-                            return irgenError(data, expr.src, "Return value is ignored");
-                        };
+                        // maybe check if the output constraint is empty?
+                        // error: output is unconstrained -> error: return value is ignored
+                        // const oreg = out_reg orelse {
+                        //     return irgenError(data, expr.src, "Return value is ignored");
+                        // };
+
+                        // that's not true - (add a b)
+                        // `a` is unconstrained -> constrained as a variable
+                        // I'm not sure what `out` is
+                        // ...
                         break :blk Arg{
                             .value = .{
-                                .out_reg = oreg,
+                                .out_reg = out,
                             },
                             .src = expr.src, // TODO fix
                         };
@@ -1189,7 +1122,7 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
             }
             if (args.next()) |nxt_arg| return irgenError(data, nxt_arg.src, "Extra argument");
 
-            try out_block.append(IR_Instruction{
+            try data.out_block.append(IR_Instruction{
                 .src = expr.src,
                 .value = .{
                     .standard_instr = .{
@@ -1199,16 +1132,33 @@ pub fn irgenReg(data: *IrgenData, scope: *Scope, out_reg: ?VariableDefinition, e
                     },
                 },
             });
+
+            return out;
         },
-        .variable => {
-            return irgenError(data, expr.src, "A register doesn't fit here.");
-        },
-        .outreg => unreachable, // shouldn't happen
-        .label_ref => {
-            return irgenError(data, expr.src, "An immediate value doesn't fit here.");
+        .variable => |variable| {
+            const vbl = scope.getVariable(variable.name) orelse {
+                return irgenError(data, expr.src, "Variable not found");
+            };
+
+            if(vbl.value == .allocated) unreachable; // there should be no allocated variables returned from getVariable
+            const vbl_id = vbl.value.unallocated.id;
+            // this error can occur when eg `a = b` but that should be the only time I think
+            return out.constrain(.{.vbl = vbl_id}) catch return irgenError(data, expr.src, "Trying to constrain a variable to a different variable");
         },
         .reg => {
-            return irgenError(data, expr.src, "A register doesn't fit here.");
+            const reg = try irgenSysReg(data, scope, expr);
+            return out.constrain(.{.reg = reg}) catch return irgenError(data, expr.src, "Trying to constrain a value to two different registers");
+        },
+        .outreg => |outreg| {
+            const reg = std.meta.stringToEnum(SystemRegister, outreg.reg) orelse {
+                return irgenError(data, expr.src, "No register with this name exists");
+            };
+            const constraint = out.constrain(.{.reg = reg}) catch return irgenError(data, expr.src, "Trying to constrain a value to two different registers");
+
+            return try irgenIntermediate(data, scope, outreg.expr.*, constraint);
+        },
+        .label_ref => {
+            return irgenError(data, expr.src, "An immediate value doesn't fit here.");
         },
         .number => {
             return irgenError(data, expr.src, "An immediate value doesn't fit here.");
@@ -1357,23 +1307,21 @@ pub fn printIrSysReg(reg: SystemRegister, out: anytype) @TypeOf(out).Error!void 
     try out.writeAll("#");
     try out.writeAll(std.meta.tagName(reg));
 }
-pub fn printIrReg(reg: VariableDefinition, out: anytype) @TypeOf(out).Error!void {
-    switch (reg.value) {
-        .allocated => |acd| {
-            try printIrSysReg(acd, out);
-        },
-        .unallocated => |una| {
-            try out.print("%{d}", .{una.id});
-        },
+pub fn printIrReg(constraint: OutputConstraint, out: anytype) @TypeOf(out).Error!void {
+    if(constraint.reg) |reg| {
+        if(constraint.vbl) |vbl| {
+            try out.print("{s}.%{d}", .{std.meta.tagName(reg), vbl});
+        }else{
+            try printIrSysReg(reg, out);
+        }
+    }else{
+        if(constraint.vbl) |vbl| {
+            try out.print("%{d}", .{vbl});
+        }else{
+            try out.writeAll("<unconstrained>");
+        }
     }
-    // value: union(enum) {
-    //     allocated: SystemRegister,
-    //     unallocated: struct {
-    //         definition_src: Src, // where the variable was defined
-    //         id: usize, // a unique id that represents this variable
-    //     },
-    // },
-    // space: RegisterSpace,
+
 }
 pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
     switch (item.value) {
@@ -1384,7 +1332,7 @@ pub fn printIrArg(item: Arg, out: anytype) @TypeOf(out).Error!void {
         .immediate, .immediate_target => |imm| {
             if (imm.width == 0) return;
             switch (imm.value) {
-                .constant => |cons| try out.print(" 0x{x}", .{cons}),
+                .constant => |cons| try out.print(" 0x{X}", .{cons}),
                 .label => |lbl| try out.print(" :{}", .{lbl.id}),
             }
         },
@@ -1431,13 +1379,6 @@ pub fn printIrLine(item: IR_Instruction, code: []const u8, out: anytype) @TypeOf
         .raw_value => |raval| {
             try out.print("? {b}\n", .{raval});
         },
-        .set_same => |ss| {
-            try out.print("↓ assert ", .{});
-            try printIrReg(ss.store_into, out);
-            try out.print(" ←", .{});
-            try printIrReg(ss.store_from, out);
-            try out.print("\n", .{});
-        },
     }
 }
 
@@ -1480,31 +1421,20 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
             const L2i = std.math.Log2Int(u64);
             var offset: u8 = 8;
             for (sinstr.args) |arg| switch (arg.value) {
-                .register => |reg| switch (reg.value) {
-                    .allocated => |areg| {
-                        res |= @as(u64, @enumToInt(areg)) << @intCast(L2i, offset);
-                        offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
-                    },
-                    .unallocated => {
+                .register, .out_reg => |constraint| {
+                    if(constraint.reg) |reg| {
+                        res |= @as(u64, @enumToInt(reg)) << @intCast(L2i, offset);
+                        offset += std.meta.bitCount(std.meta.TagType(@TypeOf(reg)));
+                    }else{
                         // TODO error at the arg
-                        return codegenError(err, item.src, "Register allocation is not supported (yet)");
-                    },
+                        return codegenError(err, item.src, "Register allocation is not supported. Specify a target register with eg `t0.(expression)`");
+                    }
                 },
                 .immediate => |imm| {
                     if (imm.width != 0) {
                         res |= @as(u64, imm.value.constant) << @intCast(L2i, offset);
                         offset += imm.width;
                     }
-                },
-                .out_reg => |reg| switch (reg.value) {
-                    .allocated => |areg| {
-                        res |= @as(u64, @enumToInt(areg)) << @intCast(L2i, offset);
-                        offset += std.meta.bitCount(std.meta.TagType(@TypeOf(areg)));
-                    },
-                    .unallocated => {
-                        // TODO error at the arg
-                        return codegenError(err, item.src, "Register allocation is not supported (yet)");
-                    },
                 },
                 .cleared_regs_bitfield => {},
                 .raw_reg => |areg| {
@@ -1522,7 +1452,6 @@ pub fn codegen(item: IR_Instruction, err: *?IrgenData.Error) !u64 {
             if (offset != 64) unreachable;
             return res;
         },
-        .set_same => unreachable, // should be handled before codegen
     }
 }
 
@@ -1728,7 +1657,12 @@ pub fn mainMain() !void {
         try stdout.writeAll("\n");
     }
 
-    // 3: transform the resolved ir → machine code
+    // 3: check the resolved ir for allocation mistakes and resolve trivial allocations
+    if(blk: {var cond = true; break :blk cond;}) {
+        @panic("TODO check the results of register allocation");
+    }
+
+    // 4: transform the resolved ir → machine code
     var res_code = try alloc.alloc(u64, unallocated.items.len);
     defer alloc.free(res_code);
 
